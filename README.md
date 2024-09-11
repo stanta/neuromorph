@@ -20,7 +20,7 @@ This project implements a distributed neural network where "neurons" act as WebS
 
 ## How to Run
 - Clone the repository:
-git clone [https://github.com/your-username/repo-name.git](https://github.com/stanta/neuromorph.git)
+git clone [https://github.com/stanta/neuromorph.git](https://github.com/stanta/neuromorph.git)
 - cargo build 
 - cargo run 
 
