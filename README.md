@@ -1,7 +1,7 @@
 # Distributed Neuromorphic System (WebSocket-based)
 
 This project implements a distributed neural network where "neurons" act as WebSocket servers and "dendrites" act as WebSocket clients. Neurons process incoming data, compute activations, and handle backpropagation using `tokio`, `tungstenite`, and `async` Rust features.
-[Pitch) ](https://drive.google.com/file/d/1k7-O1dGgwFwPmAAxjJ8pOZfV8erfnmhv/view?usp=sharing)
+[Project Pitch deck ](https://drive.google.com/file/d/1k7-O1dGgwFwPmAAxjJ8pOZfV8erfnmhv/view?usp=sharing)
 
 ## Features
 
