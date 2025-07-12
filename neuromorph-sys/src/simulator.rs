@@ -286,6 +286,7 @@ pub unsafe fn neuromorphFree(devPtr: NeuromorphDevicePtr) -> NeuromorphResult {
     let handle = devPtr as usize;
     
     if let Some(memory) = sim.memory_pools.remove(&handle) {
+        // Free the actual allocated memory pointer, not the handle
         libc::free(memory.ptr);
         neuromorph_success!()
     } else {
@@ -307,11 +308,39 @@ pub unsafe fn neuromorphMemcpy(
     thread::sleep(Duration::from_micros((count / 1000) as u64));
     
     match kind {
-        NeuromorphMemcpyKind::HostToHost |
-        NeuromorphMemcpyKind::HostToDevice |
-        NeuromorphMemcpyKind::DeviceToHost |
-        NeuromorphMemcpyKind::DeviceToDevice => {
+        NeuromorphMemcpyKind::HostToHost => {
             ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, count);
+        },
+        NeuromorphMemcpyKind::HostToDevice => {
+            // dst is device handle, src is host pointer
+            let sim = SIMULATOR.lock().unwrap();
+            let handle = dst as usize;
+            if let Some(memory) = sim.memory_pools.get(&handle) {
+                ptr::copy_nonoverlapping(src as *const u8, memory.ptr as *mut u8, count);
+            } else {
+                return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+            }
+        },
+        NeuromorphMemcpyKind::DeviceToHost => {
+            // src is device handle, dst is host pointer
+            let sim = SIMULATOR.lock().unwrap();
+            let handle = src as usize;
+            if let Some(memory) = sim.memory_pools.get(&handle) {
+                ptr::copy_nonoverlapping(memory.ptr as *const u8, dst as *mut u8, count);
+            } else {
+                return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+            }
+        },
+        NeuromorphMemcpyKind::DeviceToDevice => {
+            // Both are device handles
+            let sim = SIMULATOR.lock().unwrap();
+            let src_handle = src as usize;
+            let dst_handle = dst as usize;
+            if let (Some(src_mem), Some(dst_mem)) = (sim.memory_pools.get(&src_handle), sim.memory_pools.get(&dst_handle)) {
+                ptr::copy_nonoverlapping(src_mem.ptr as *const u8, dst_mem.ptr as *mut u8, count);
+            } else {
+                return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+            }
         }
     }
     
