@@ -1,0 +1,27 @@
+[package]
+name = "neuromorph-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Unsafe FFI bindings for Neuromorph neuromorphic processor driver"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stanta/neuromorph"
+
+[lib]
+name = "neuromorph_sys"
+
+[dependencies]
+libc = "0.2"
+lazy_static = "1.5"
+
+[build-dependencies]
+cc = "1.0"
+bindgen = "0.70"  # Latest version
+cbindgen = "0.26"  # Latest version
+
+[features]
+default = ["simulator"]
+simulator = []  # Use simulator backend
+hardware = []   # Use real hardware backend
+
+[package.metadata.docs.rs]
+features = ["simulator"]

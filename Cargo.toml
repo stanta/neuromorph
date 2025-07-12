@@ -3,6 +3,12 @@ name = "neuromorph"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = [
+    ".",
+    "neuromorph-sys"
+]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -11,3 +17,4 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.23.0"
 futures-util = "0.3"
 rand = "0.8"
+neuromorph-sys = { path = "neuromorph-sys", features = ["simulator"] }
