@@ -1,0 +1,8 @@
+[package]
+name = "neuromorph-driver"
+version = "0.1.0"
+edition = "2021"
+description = "Safe Rust driver library for Neuromorph neuromorphic processor"
+
+[dependencies]
+neuromorph-sys = { path = "../neuromorph-sys", features = ["simulator"] }
