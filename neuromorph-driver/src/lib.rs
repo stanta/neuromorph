@@ -5,6 +5,7 @@
 
 use neuromorph_sys::*;
 use std::ptr;
+use std::collections::BTreeMap;
 
 /// Error types for the Neuromorph driver
 ///
@@ -254,6 +255,214 @@ impl Drop for Event {
         unsafe {
             if !self.handle.is_null() {
                 let _ = neuromorphEventDestroy(self.handle);
+            }
+        }
+    }
+}
+
+/// GPU-style memory allocator for managing on-device RAM and sub-allocation
+///
+/// This allocator provides sub-allocation capabilities on top of neuromorph device memory,
+/// similar to how GPU memory allocators manage VRAM with efficient sub-allocation.
+/// It uses a first-fit allocation strategy with alignment support and automatic coalescing
+/// of free blocks to minimize fragmentation.
+///
+/// # Examples
+///
+/// ```
+/// use neuromorph_driver::{init, MemoryAllocator};
+///
+/// init().unwrap();
+/// let mut allocator = MemoryAllocator::new(4096).unwrap();
+///
+/// // Allocate a 1024-byte block with 8-byte alignment
+/// let block = allocator.allocate(1024, 8).unwrap();
+/// assert_eq!(block.size(), 1024);
+/// assert_eq!(block.offset(), 0);
+///
+/// // The block is automatically freed when it goes out of scope
+/// ```
+pub struct MemoryAllocator {
+    device_memory: DeviceMemory,
+    allocated_blocks: BTreeMap<usize, usize>, // offset -> size
+    free_blocks: BTreeMap<usize, usize>, // offset -> size
+}
+
+impl MemoryAllocator {
+    /// Create a new memory allocator with a device memory pool
+    pub fn new(pool_size: usize) -> Result<Self> {
+        let device_memory = DeviceMemory::new(pool_size)?;
+        let mut free_blocks = BTreeMap::new();
+        free_blocks.insert(0, pool_size);
+
+        Ok(MemoryAllocator {
+            device_memory,
+            allocated_blocks: BTreeMap::new(),
+            free_blocks,
+        })
+    }
+
+    /// Allocate a sub-region from the memory pool with alignment
+    pub fn allocate(&mut self, size: usize, align: usize) -> Result<MemoryBlock> {
+        if size == 0 {
+            return Err(NeuromorphError::ErrorInvalidValue);
+        }
+
+        // Find a suitable free block
+        for (&offset, &block_size) in &self.free_blocks.clone() {
+            let aligned_offset = Self::align_up(offset, align);
+            let padding = aligned_offset - offset;
+
+            if aligned_offset + size <= offset + block_size {
+                // Found a suitable block
+                self.free_blocks.remove(&offset);
+
+                // Add back the remaining space
+                if padding > 0 {
+                    self.free_blocks.insert(offset, padding);
+                }
+                let remaining = (offset + block_size) - (aligned_offset + size);
+                if remaining > 0 {
+                    self.free_blocks.insert(aligned_offset + size, remaining);
+                }
+
+                // Record allocation
+                self.allocated_blocks.insert(aligned_offset, size);
+
+                return Ok(MemoryBlock {
+                    allocator: self as *mut MemoryAllocator,
+                    offset: aligned_offset,
+                    size,
+                });
+            }
+        }
+
+        Err(NeuromorphError::ErrorOutOfMemory)
+    }
+
+    /// Deallocate a memory block
+    pub fn deallocate(&mut self, offset: usize, size: usize) {
+        // Remove from allocated
+        self.allocated_blocks.remove(&offset);
+
+        // Add to free blocks and coalesce
+        self.free_blocks.insert(offset, size);
+        self.coalesce_free_blocks();
+    }
+
+    /// Align offset up to the given alignment
+    fn align_up(offset: usize, align: usize) -> usize {
+        (offset + align - 1) & !(align - 1)
+    }
+
+    /// Coalesce adjacent free blocks
+    fn coalesce_free_blocks(&mut self) {
+        let mut coalesced = BTreeMap::new();
+        let mut prev_offset = None;
+        let mut prev_size = 0;
+
+        for (&offset, &size) in &self.free_blocks {
+            if let Some(prev) = prev_offset {
+                if prev + prev_size == offset {
+                    // Coalesce
+                    prev_size += size;
+                    continue;
+                } else {
+                    coalesced.insert(prev, prev_size);
+                }
+            }
+            prev_offset = Some(offset);
+            prev_size = size;
+        }
+
+        if let Some(prev) = prev_offset {
+            coalesced.insert(prev, prev_size);
+        }
+
+        self.free_blocks = coalesced;
+    }
+
+    /// Get the base device pointer
+    pub fn base_ptr(&self) -> NeuromorphDevicePtr {
+        self.device_memory.handle()
+    }
+}
+
+impl Drop for MemoryAllocator {
+    fn drop(&mut self) {
+        // DeviceMemory will be dropped automatically
+    }
+}
+
+/// Memory block representing a sub-allocated region
+///
+/// Represents a contiguous region of device memory allocated from a MemoryAllocator.
+/// The block automatically deallocates itself when dropped, following RAII principles.
+///
+/// Memory blocks can be used for data transfer operations similar to DeviceMemory,
+/// but they represent sub-allocated regions rather than whole device memory allocations.
+#[derive(Debug)]
+pub struct MemoryBlock {
+    allocator: *mut MemoryAllocator,
+    offset: usize,
+    size: usize,
+}
+
+impl MemoryBlock {
+    /// Get the device pointer for this block (base + offset)
+    pub fn device_ptr(&self) -> NeuromorphDevicePtr {
+        unsafe {
+            if self.allocator.is_null() {
+                ptr::null_mut()
+            } else {
+                let base = (*self.allocator).base_ptr();
+                (base as usize + self.offset) as NeuromorphDevicePtr
+            }
+        }
+    }
+
+    /// Get the offset within the pool
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Get the size of this block
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Copy data from host to this memory block
+    pub fn copy_from_host(&self, host_data: &[u8], kind: NeuromorphMemcpyKind) -> Result<()> {
+        unsafe {
+            let result = neuromorphMemcpy(
+                self.device_ptr() as *mut std::os::raw::c_void,
+                host_data.as_ptr() as *const std::os::raw::c_void,
+                host_data.len(),
+                kind,
+            );
+            convert_error(result)
+        }
+    }
+
+    /// Copy data from this memory block to host
+    pub fn copy_to_host(&self, host_data: &mut [u8], kind: NeuromorphMemcpyKind) -> Result<()> {
+        unsafe {
+            let result = neuromorphMemcpy(
+                host_data.as_mut_ptr() as *mut std::os::raw::c_void,
+                self.device_ptr() as *const std::os::raw::c_void,
+                host_data.len(),
+                kind,
+            );
+            convert_error(result)
+        }
+    }
+}
+
+impl Drop for MemoryBlock {
+    fn drop(&mut self) {
+        if !self.allocator.is_null() {
+            unsafe {
+                (*self.allocator).deallocate(self.offset, self.size);
             }
         }
     }
@@ -516,4 +725,186 @@ mod tests {
         assert_eq!(format!("{}", error), "Invalid value");
         assert_eq!(format!("{:?}", error), "ErrorInvalidValue");
     }
+
+    #[test]
+    fn test_memory_allocator_creation() {
+        init().unwrap();
+        let allocator = MemoryAllocator::new(4096).unwrap();
+        // MemoryAllocator will be dropped automatically
+    }
+
+
+    #[test]
+    fn test_memory_allocator_out_of_memory() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(1024).unwrap();
+
+        // Try to allocate more than available
+        let result = allocator.allocate(2048, 8);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), NeuromorphError::ErrorOutOfMemory);
+    }
+
+    #[test]
+    fn test_memory_sub_allocation_basic() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(4096).unwrap();
+
+        // Allocate a block
+        let block = allocator.allocate(1024, 8).unwrap();
+        assert_eq!(block.size(), 1024);
+        assert_eq!(block.offset(), 0);
+
+        // Allocate another block
+        let block2 = allocator.allocate(512, 16).unwrap();
+        assert_eq!(block2.size(), 512);
+        // Should be aligned to 16 bytes
+        assert_eq!(block2.offset(), 1024);
+
+        // Check device pointers are different
+        assert_ne!(block.device_ptr(), block2.device_ptr());
+    }
+
+    #[test]
+    fn test_memory_sub_allocation_alignment() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(4096).unwrap();
+
+        // Test various alignments
+        let block1 = allocator.allocate(100, 64).unwrap();
+        assert_eq!(block1.offset() % 64, 0);
+
+        let block2 = allocator.allocate(200, 128).unwrap();
+        assert_eq!(block2.offset() % 128, 0);
+
+        let block3 = allocator.allocate(50, 256).unwrap();
+        assert_eq!(block3.offset() % 256, 0);
+    }
+
+    #[test]
+    fn test_memory_sub_allocation_fragmentation() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(2048).unwrap();
+
+        // Allocate multiple blocks
+        let block1 = allocator.allocate(256, 8).unwrap(); // offset 0
+        let block2 = allocator.allocate(256, 8).unwrap(); // offset 256
+        let block3 = allocator.allocate(256, 8).unwrap(); // offset 512
+
+        // Drop middle block to create fragmentation
+        drop(block2);
+
+        // Allocate a block that should fit in the freed space
+        let block4 = allocator.allocate(256, 8).unwrap();
+        assert_eq!(block4.offset(), 256); // Should reuse the freed space
+
+        // Allocate another block
+        let block5 = allocator.allocate(256, 8).unwrap();
+        assert_eq!(block5.offset(), 768); // Should be after block3
+    }
+
+    #[test]
+    fn test_memory_sub_allocation_max_utilization() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(1024).unwrap();
+
+        // Allocate exactly the pool size
+        let block = allocator.allocate(1024, 1).unwrap();
+        assert_eq!(block.size(), 1024);
+        assert_eq!(block.offset(), 0);
+
+        // Should fail to allocate more
+        let result = allocator.allocate(1, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_memory_sub_allocation_with_padding() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(1024).unwrap();
+
+        // Allocate with alignment that requires padding
+        let block1 = allocator.allocate(100, 8).unwrap(); // offset 0
+        let block2 = allocator.allocate(100, 64).unwrap(); // needs alignment to 64
+
+        // Should have padding between blocks
+        assert!(block2.offset() >= block1.offset() + block1.size());
+        assert_eq!(block2.offset() % 64, 0);
+    }
+
+    #[test]
+    fn test_memory_block_operations() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(4096).unwrap();
+        let block = allocator.allocate(1024, 8).unwrap();
+
+        // Test basic properties
+        assert_eq!(block.size(), 1024);
+        assert!(block.offset() >= 0);
+
+        // Test device pointer calculation
+        let base_ptr = allocator.base_ptr();
+        let expected_ptr = (base_ptr as usize + block.offset()) as NeuromorphDevicePtr;
+        assert_eq!(block.device_ptr(), expected_ptr);
+    }
+
+    #[test]
+    fn test_memory_allocator_reuse_after_deallocation() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(2048).unwrap();
+
+        // Allocate and deallocate
+        {
+            let block = allocator.allocate(512, 8).unwrap();
+            assert_eq!(block.offset(), 0);
+        } // block is dropped here
+
+        // Should be able to allocate again in the same space
+        let block2 = allocator.allocate(512, 8).unwrap();
+        assert_eq!(block2.offset(), 0); // Should reuse the space
+    }
+
+    #[test]
+    fn test_memory_sub_allocation_edge_cases() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(512).unwrap();
+
+        // Test zero-sized allocation (should fail)
+        let result = allocator.allocate(0, 8);
+        assert!(result.is_err()); // Zero size should fail
+
+        // Test allocation larger than pool
+        let result = allocator.allocate(1024, 8);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), NeuromorphError::ErrorOutOfMemory);
+
+        // Test allocation that fits exactly after alignment
+        let block = allocator.allocate(512, 1).unwrap();
+        assert_eq!(block.size(), 512);
+        assert_eq!(block.offset(), 0);
+    }
+
+    #[test]
+    fn test_memory_coalescing() {
+        init().unwrap();
+        let mut allocator = MemoryAllocator::new(1024).unwrap();
+
+        // Allocate three blocks
+        let block1 = allocator.allocate(200, 8).unwrap(); // 0-200
+        let block2 = allocator.allocate(200, 8).unwrap(); // 200-400
+        let block3 = allocator.allocate(200, 8).unwrap(); // 400-600
+
+        // Free middle block
+        drop(block2);
+
+        // Free first block
+        drop(block1);
+
+        // Should coalesce free blocks
+        // Now try to allocate a larger block that spans the coalesced space
+        let block4 = allocator.allocate(400, 8).unwrap();
+        assert_eq!(block4.offset(), 0); // Should start at beginning
+        assert_eq!(block4.size(), 400);
+    }
+
 }

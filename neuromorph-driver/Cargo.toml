@@ -6,3 +6,4 @@ description = "Safe Rust driver library for Neuromorph neuromorphic processor"
 
 [dependencies]
 neuromorph-sys = { path = "../neuromorph-sys", features = ["simulator"] }
+gpu-alloc = "0.6"
