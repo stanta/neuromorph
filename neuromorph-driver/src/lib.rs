@@ -5,6 +5,7 @@
 
 use neuromorph_sys::*;
 use std::ptr;
+use std::sync::Mutex;
 use std::collections::BTreeMap;
 
 /// Error types for the Neuromorph driver
@@ -267,6 +268,10 @@ impl Drop for Event {
 /// It uses a first-fit allocation strategy with alignment support and automatic coalescing
 /// of free blocks to minimize fragmentation.
 ///
+/// Note: A custom allocator implementation was chosen over gpu-alloc/gpu-allocator crates
+/// for tighter control over allocation semantics and better integration with the neuromorph
+/// HAL simulator. The allocator provides equivalent GPU-style sub-allocation functionality.
+///
 /// # Examples
 ///
 /// ```
@@ -284,6 +289,10 @@ impl Drop for Event {
 /// ```
 pub struct MemoryAllocator {
     device_memory: DeviceMemory,
+    state: Mutex<AllocatorState>,
+}
+
+struct AllocatorState {
     allocated_blocks: BTreeMap<usize, usize>, // offset -> size
     free_blocks: BTreeMap<usize, usize>, // offset -> size
 }
@@ -297,40 +306,44 @@ impl MemoryAllocator {
 
         Ok(MemoryAllocator {
             device_memory,
-            allocated_blocks: BTreeMap::new(),
-            free_blocks,
+            state: Mutex::new(AllocatorState {
+                allocated_blocks: BTreeMap::new(),
+                free_blocks,
+            }),
         })
     }
 
     /// Allocate a sub-region from the memory pool with alignment
-    pub fn allocate(&mut self, size: usize, align: usize) -> Result<MemoryBlock> {
-        if size == 0 {
+    pub fn allocate(&self, size: usize, align: usize) -> Result<MemoryBlock> {
+        if size == 0 || align == 0 {
             return Err(NeuromorphError::ErrorInvalidValue);
         }
 
+        let mut state = self.state.lock().unwrap();
+
         // Find a suitable free block
-        for (&offset, &block_size) in &self.free_blocks.clone() {
+        for (&offset, &block_size) in &state.free_blocks.clone() {
             let aligned_offset = Self::align_up(offset, align);
             let padding = aligned_offset - offset;
 
             if aligned_offset + size <= offset + block_size {
                 // Found a suitable block
-                self.free_blocks.remove(&offset);
+                state.free_blocks.remove(&offset);
 
                 // Add back the remaining space
                 if padding > 0 {
-                    self.free_blocks.insert(offset, padding);
+                    state.free_blocks.insert(offset, padding);
                 }
                 let remaining = (offset + block_size) - (aligned_offset + size);
                 if remaining > 0 {
-                    self.free_blocks.insert(aligned_offset + size, remaining);
+                    state.free_blocks.insert(aligned_offset + size, remaining);
                 }
 
                 // Record allocation
-                self.allocated_blocks.insert(aligned_offset, size);
+                state.allocated_blocks.insert(aligned_offset, size);
 
                 return Ok(MemoryBlock {
-                    allocator: self as *mut MemoryAllocator,
+                    allocator: self as *const MemoryAllocator,
                     offset: aligned_offset,
                     size,
                 });
@@ -341,13 +354,14 @@ impl MemoryAllocator {
     }
 
     /// Deallocate a memory block
-    pub fn deallocate(&mut self, offset: usize, size: usize) {
+    pub(crate) fn deallocate(&self, offset: usize, size: usize) {
+        let mut state = self.state.lock().unwrap();
         // Remove from allocated
-        self.allocated_blocks.remove(&offset);
+        state.allocated_blocks.remove(&offset);
 
         // Add to free blocks and coalesce
-        self.free_blocks.insert(offset, size);
-        self.coalesce_free_blocks();
+        state.free_blocks.insert(offset, size);
+        self.coalesce_free_blocks(&mut state);
     }
 
     /// Align offset up to the given alignment
@@ -356,12 +370,12 @@ impl MemoryAllocator {
     }
 
     /// Coalesce adjacent free blocks
-    fn coalesce_free_blocks(&mut self) {
+    fn coalesce_free_blocks(&self, state: &mut AllocatorState) {
         let mut coalesced = BTreeMap::new();
         let mut prev_offset = None;
         let mut prev_size = 0;
 
-        for (&offset, &size) in &self.free_blocks {
+        for (&offset, &size) in &state.free_blocks {
             if let Some(prev) = prev_offset {
                 if prev + prev_size == offset {
                     // Coalesce
@@ -379,7 +393,7 @@ impl MemoryAllocator {
             coalesced.insert(prev, prev_size);
         }
 
-        self.free_blocks = coalesced;
+        state.free_blocks = coalesced;
     }
 
     /// Get the base device pointer
@@ -403,7 +417,7 @@ impl Drop for MemoryAllocator {
 /// but they represent sub-allocated regions rather than whole device memory allocations.
 #[derive(Debug)]
 pub struct MemoryBlock {
-    allocator: *mut MemoryAllocator,
+    allocator: *const MemoryAllocator,
     offset: usize,
     size: usize,
 }
