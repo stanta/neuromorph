@@ -6,6 +6,95 @@
 use neuromorph_sys::*;
 use std::ptr;
 
+/// Error types for the Neuromorph driver
+///
+/// Maps cleanly to numeric C codes:
+/// - 0 = success
+/// - negative = recoverable errors
+/// - positive = fatal errors
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeuromorphError {
+    // Success
+    Success = 0,
+
+    // Recoverable errors (negative values)
+    ErrorInvalidValue = -3,
+    ErrorInvalidHandle = -4,
+    ErrorInvalidDevice = -5,
+    ErrorOutOfMemory = -7,
+    ErrorNotReady = -8,
+    ErrorTimeout = -9,
+
+    // Fatal errors (positive values)
+    ErrorFatalHardwareFailure = 1,
+    ErrorFatalInternalError = 4,
+    ErrorFatalUnknown = 5,
+}
+
+impl NeuromorphError {
+    /// Convert to C integer code
+    pub fn to_c_int(self) -> i32 {
+        self as i32
+    }
+
+    /// Convert from C integer code
+    pub fn from_c_int(code: i32) -> Option<Self> {
+        match code {
+            0 => Some(Self::Success),
+            -3 => Some(Self::ErrorInvalidValue),
+            -4 => Some(Self::ErrorInvalidHandle),
+            -5 => Some(Self::ErrorInvalidDevice),
+            -7 => Some(Self::ErrorOutOfMemory),
+            -8 => Some(Self::ErrorNotReady),
+            -9 => Some(Self::ErrorTimeout),
+            1 => Some(Self::ErrorFatalHardwareFailure),
+            4 => Some(Self::ErrorFatalInternalError),
+            5 => Some(Self::ErrorFatalUnknown),
+            _ => None,
+        }
+    }
+
+    /// Check if error is fatal
+    pub fn is_fatal(self) -> bool {
+        (self as i32) > 0
+    }
+
+    /// Check if error is recoverable
+    pub fn is_recoverable(self) -> bool {
+        (self as i32) < 0
+    }
+
+    /// Check if successful
+    pub fn is_success(self) -> bool {
+        (self as i32) == 0
+    }
+
+    /// Get error description
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Success => "Success",
+            Self::ErrorInvalidValue => "Invalid value",
+            Self::ErrorInvalidHandle => "Invalid handle",
+            Self::ErrorInvalidDevice => "Invalid device",
+            Self::ErrorOutOfMemory => "Out of memory",
+            Self::ErrorNotReady => "Device not ready",
+            Self::ErrorTimeout => "Operation timeout",
+            Self::ErrorFatalHardwareFailure => "Fatal hardware failure",
+            Self::ErrorFatalInternalError => "Fatal internal error",
+            Self::ErrorFatalUnknown => "Fatal unknown error",
+        }
+    }
+}
+
+impl std::fmt::Display for NeuromorphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl std::error::Error for NeuromorphError {}
+
 /// Result type for driver operations
 pub type Result<T> = std::result::Result<T, NeuromorphError>;
 
@@ -14,7 +103,7 @@ fn convert_error(result: neuromorph_sys::NeuromorphResult) -> Result<()> {
     if result == neuromorph_sys::NEUROMORPH_SUCCESS {
         Ok(())
     } else {
-        Err(NeuromorphError::from_c_int(result).unwrap_or(NeuromorphError::ErrorFatalUnknown))
+        Err(NeuromorphError::from_c_int(result as i32).unwrap_or(NeuromorphError::ErrorFatalUnknown))
     }
 }
 
@@ -340,5 +429,91 @@ mod tests {
         assert!(memory.copy_to_host(&mut result_data, NeuromorphMemcpyKind::DeviceToHost).is_ok());
 
         assert_eq!(test_data, result_data);
+    }
+
+    #[test]
+    fn test_error_enum_conversion() {
+        // Test to_c_int conversion
+        assert_eq!(NeuromorphError::Success.to_c_int(), 0);
+        assert_eq!(NeuromorphError::ErrorInvalidValue.to_c_int(), -3);
+        assert_eq!(NeuromorphError::ErrorFatalHardwareFailure.to_c_int(), 1);
+
+        // Test from_c_int conversion
+        assert_eq!(NeuromorphError::from_c_int(0), Some(NeuromorphError::Success));
+        assert_eq!(NeuromorphError::from_c_int(-3), Some(NeuromorphError::ErrorInvalidValue));
+        assert_eq!(NeuromorphError::from_c_int(-999), None); // Unknown error code
+
+        // Test error classification
+        assert!(NeuromorphError::Success.is_success());
+        assert!(!NeuromorphError::Success.is_fatal());
+        assert!(!NeuromorphError::Success.is_recoverable());
+
+        assert!(NeuromorphError::ErrorInvalidValue.is_recoverable());
+        assert!(!NeuromorphError::ErrorInvalidValue.is_fatal());
+        assert!(!NeuromorphError::ErrorInvalidValue.is_success());
+
+        assert!(NeuromorphError::ErrorFatalHardwareFailure.is_fatal());
+        assert!(!NeuromorphError::ErrorFatalHardwareFailure.is_recoverable());
+        assert!(!NeuromorphError::ErrorFatalHardwareFailure.is_success());
+
+        // Test descriptions
+        assert_eq!(NeuromorphError::Success.description(), "Success");
+        assert_eq!(NeuromorphError::ErrorInvalidValue.description(), "Invalid value");
+        assert_eq!(NeuromorphError::ErrorFatalHardwareFailure.description(), "Fatal hardware failure");
+    }
+
+    #[test]
+    fn test_device_properties() {
+        init().unwrap();
+        let props = device_properties(0).unwrap();
+
+        // Basic validation that properties are reasonable
+        assert!(props.total_global_mem > 0);
+        assert!(props.multi_processor_count > 0);
+    }
+
+    #[test]
+    fn test_event_recording() {
+        init().unwrap();
+        let stream = Stream::new().unwrap();
+        let event = Event::new().unwrap();
+
+        // Record event in stream
+        assert!(event.record(&stream).is_ok());
+
+        // Synchronize should work (event was recorded)
+        assert!(event.synchronize().is_ok());
+    }
+
+    #[test]
+    fn test_async_memory_copy() {
+        init().unwrap();
+        let memory = DeviceMemory::new(1024).unwrap();
+        let stream = Stream::new().unwrap();
+
+        let test_data = vec![0xABu8; 512];
+
+        // Async copy from host to device
+        assert!(memory.copy_from_host_async(&test_data, &stream, NeuromorphMemcpyKind::HostToDevice).is_ok());
+
+        // Synchronize stream to ensure copy completes
+        assert!(stream.synchronize().is_ok());
+
+        // Async copy from device to host
+        let mut result_data = vec![0u8; 512];
+        assert!(memory.copy_to_host_async(&mut result_data, &stream, NeuromorphMemcpyKind::DeviceToHost).is_ok());
+
+        // Synchronize to ensure copy completes
+        assert!(stream.synchronize().is_ok());
+
+        // Verify data
+        assert_eq!(test_data, result_data);
+    }
+
+    #[test]
+    fn test_error_display() {
+        let error = NeuromorphError::ErrorInvalidValue;
+        assert_eq!(format!("{}", error), "Invalid value");
+        assert_eq!(format!("{:?}", error), "ErrorInvalidValue");
     }
 }
