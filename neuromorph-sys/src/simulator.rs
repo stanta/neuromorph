@@ -119,10 +119,11 @@ struct SimulatedStream {
 }
 
 /// Stream command types
+#[derive(Clone)]
 enum StreamCommand {
     MemCopy {
         dst: usize,
-        src: usize, 
+        src: usize,
         size: usize,
         kind: NeuromorphMemcpyKind,
     },
@@ -413,18 +414,64 @@ pub unsafe fn neuromorphStreamSynchronize(hStream: NeuromorphStream) -> Neuromor
     if hStream.is_null() {
         return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
     }
-    
-    let sim = SIMULATOR.lock().unwrap();
+
+    let mut sim = SIMULATOR.lock().unwrap();
     let handle = hStream as usize;
-    
-    if let Some(stream) = sim.streams.get(&handle) {
+
+    // First, check if stream exists and get the commands
+    let commands = if let Some(stream) = sim.streams.get(&handle) {
+        stream.commands.clone()
+    } else {
+        return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+    };
+
+    // Execute all queued commands
+    for command in &commands {
+        match command {
+            StreamCommand::MemCopy { dst, src, size, kind } => {
+                // Execute the memory copy
+                let dst_ptr = *dst as *mut c_void;
+                let src_ptr = *src as *const c_void;
+
+                match kind {
+                    NeuromorphMemcpyKind::HostToHost => {
+                        ptr::copy_nonoverlapping(src_ptr as *const u8, dst_ptr as *mut u8, *size);
+                    },
+                    NeuromorphMemcpyKind::HostToDevice => {
+                        if let Some(memory) = sim.memory_pools.get(&dst) {
+                            ptr::copy_nonoverlapping(src_ptr as *const u8, memory.ptr as *mut u8, *size);
+                        }
+                    },
+                    NeuromorphMemcpyKind::DeviceToHost => {
+                        if let Some(memory) = sim.memory_pools.get(&src) {
+                            ptr::copy_nonoverlapping(memory.ptr as *const u8, dst_ptr as *mut u8, *size);
+                        }
+                    },
+                    NeuromorphMemcpyKind::DeviceToDevice => {
+                        if let (Some(src_mem), Some(dst_mem)) = (sim.memory_pools.get(&src), sim.memory_pools.get(&dst)) {
+                            ptr::copy_nonoverlapping(src_mem.ptr as *const u8, dst_mem.ptr as *mut u8, *size);
+                        }
+                    }
+                }
+            },
+            StreamCommand::KernelLaunch { .. } => {
+                // Kernel execution is already simulated in neuromorphLaunchKernel
+            },
+            StreamCommand::EventRecord { .. } => {
+                // Event recording is handled separately
+            }
+        }
+    }
+
+    // Now clear the commands from the stream
+    if let Some(stream) = sim.streams.get_mut(&handle) {
+        stream.commands.clear();
         // Simulate processing time
         thread::sleep(Duration::from_millis(1));
         stream.completed.store(true, Ordering::SeqCst);
-        neuromorph_success!()
-    } else {
-        neuromorph_error!(NeuromorphError::ErrorInvalidHandle)
     }
+
+    neuromorph_success!()
 }
 
 pub unsafe fn neuromorphEventCreate(phEvent: *mut NeuromorphEvent) -> NeuromorphResult {
