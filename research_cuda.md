@@ -328,8 +328,8 @@ raw.githubusercontent.com
 raw.githubusercontent.com
 
 2. Hardware-abstraction layer (HAL) in Rust
-2.1 Create neuromorph-sys: unsafe FFI bindings to the board/kernel driver or simulator.
-2.2 Expose register access, DMA queues and any irq/event mechanism as thin Rust functions.
++2.1 Create neuromorph-sys: unsafe FFI bindings to the board/kernel driver or simulator.
++2.2 Expose register access, DMA queues and any irq/event mechanism as thin Rust functions.
 2.3 Mirror CUDA’s driver object model: Context, Stream, Event, DeviceMemory, etc.; each wraps a raw handle and implements Drop to release resources automatically.
 2.4 Base errors on a small enum NeuromorphError that maps cleanly to numeric C codes (0 = success; negative = recoverable; positive = fatal).
 

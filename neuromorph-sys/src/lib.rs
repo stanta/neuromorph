@@ -303,6 +303,455 @@ pub unsafe fn neuromorphLaunchKernel(
     }
 }
 
+// Register access functions
+
+/// Read from a device register
+///
+/// # Safety
+/// Device must be valid, value must be a valid pointer
+pub unsafe fn neuromorphRegisterRead(
+    device: NeuromorphDevice,
+    register_offset: c_uint,
+    value: *mut c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphRegisterRead(device, register_offset, value)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphRegisterRead(device, register_offset, value)
+    }
+}
+
+/// Write to a device register
+///
+/// # Safety
+/// Device must be valid
+pub unsafe fn neuromorphRegisterWrite(
+    device: NeuromorphDevice,
+    register_offset: c_uint,
+    value: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphRegisterWrite(device, register_offset, value)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphRegisterWrite(device, register_offset, value)
+    }
+}
+
+/// Read multiple device registers in batch
+///
+/// # Safety
+/// Device must be valid, arrays must be valid and count must match
+pub unsafe fn neuromorphRegisterReadBatch(
+    device: NeuromorphDevice,
+    register_offsets: *const c_uint,
+    values: *mut c_uint,
+    count: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphRegisterReadBatch(device, register_offsets, values, count)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphRegisterReadBatch(device, register_offsets, values, count)
+    }
+}
+
+/// Write multiple device registers in batch
+///
+/// # Safety
+/// Device must be valid, arrays must be valid and count must match
+pub unsafe fn neuromorphRegisterWriteBatch(
+    device: NeuromorphDevice,
+    register_offsets: *const c_uint,
+    values: *const c_uint,
+    count: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphRegisterWriteBatch(device, register_offsets, values, count)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphRegisterWriteBatch(device, register_offsets, values, count)
+    }
+}
+
+// DMA queue functions
+
+/// Create a DMA queue for the device
+///
+/// # Safety
+/// Device must be valid, queue must be a valid pointer
+pub unsafe fn neuromorphDmaQueueCreate(
+    device: NeuromorphDevice,
+    queue: *mut *mut c_void,
+    priority: c_int
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphDmaQueueCreate(device, queue, priority)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphDmaQueueCreate(device, queue, priority)
+    }
+}
+
+/// Destroy a DMA queue
+///
+/// # Safety
+/// Queue must be a valid DMA queue handle
+pub unsafe fn neuromorphDmaQueueDestroy(queue: *mut c_void) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphDmaQueueDestroy(queue)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphDmaQueueDestroy(queue)
+    }
+}
+
+/// Submit a DMA transfer
+///
+/// # Safety
+/// Queue must be valid, pointers must be valid, transfer_id must be a valid pointer
+pub unsafe fn neuromorphDmaSubmit(
+    queue: *mut c_void,
+    dst: *mut c_void,
+    src: *const c_void,
+    size: usize,
+    transfer_id: *mut c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphDmaSubmit(queue, dst, src, size, transfer_id)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphDmaSubmit(queue, dst, src, size, transfer_id)
+    }
+}
+
+/// Wait for DMA transfer completion
+///
+/// # Safety
+/// Queue must be valid
+pub unsafe fn neuromorphDmaWait(
+    queue: *mut c_void,
+    transfer_id: c_uint,
+    timeout_ms: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphDmaWait(queue, transfer_id, timeout_ms)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphDmaWait(queue, transfer_id, timeout_ms)
+    }
+}
+
+/// Query DMA transfer status
+///
+/// # Safety
+/// Queue must be valid, completed must be a valid pointer
+pub unsafe fn neuromorphDmaQuery(
+    queue: *mut c_void,
+    transfer_id: c_uint,
+    completed: *mut c_int
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphDmaQuery(queue, transfer_id, completed)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphDmaQuery(queue, transfer_id, completed)
+    }
+}
+
+// IRQ functions
+
+/// Register an interrupt handler
+///
+/// # Safety
+/// Device must be valid, handler must be a valid function pointer
+pub unsafe fn neuromorphIrqRegister(
+    device: NeuromorphDevice,
+    irq_mask: c_uint,
+    handler: NeuromorphIrqHandler,
+    user_data: *mut c_void
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphIrqRegister(device, irq_mask, handler, user_data)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphIrqRegister(device, irq_mask, handler, user_data)
+    }
+}
+
+/// Unregister an interrupt handler
+///
+/// # Safety
+/// Device must be valid
+pub unsafe fn neuromorphIrqUnregister(
+    device: NeuromorphDevice,
+    irq_mask: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphIrqUnregister(device, irq_mask)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphIrqUnregister(device, irq_mask)
+    }
+}
+
+/// Enable interrupts
+///
+/// # Safety
+/// Device must be valid
+pub unsafe fn neuromorphIrqEnable(
+    device: NeuromorphDevice,
+    irq_mask: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphIrqEnable(device, irq_mask)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphIrqEnable(device, irq_mask)
+    }
+}
+
+/// Disable interrupts
+///
+/// # Safety
+/// Device must be valid
+pub unsafe fn neuromorphIrqDisable(
+    device: NeuromorphDevice,
+    irq_mask: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphIrqDisable(device, irq_mask)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphIrqDisable(device, irq_mask)
+    }
+}
+
+/// Get interrupt status
+///
+/// # Safety
+/// Device must be valid, status must be a valid pointer
+pub unsafe fn neuromorphIrqGetStatus(
+    device: NeuromorphDevice,
+    status: *mut c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphIrqGetStatus(device, status)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphIrqGetStatus(device, status)
+    }
+}
+
+/// Clear interrupt status
+///
+/// # Safety
+/// Device must be valid
+pub unsafe fn neuromorphIrqClear(
+    device: NeuromorphDevice,
+    irq_mask: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphIrqClear(device, irq_mask)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphIrqClear(device, irq_mask)
+    }
+}
+
+// Hardware event functions
+
+/// Create a hardware event
+///
+/// # Safety
+/// Device must be valid, event must be a valid pointer
+pub unsafe fn neuromorphHwEventCreate(
+    device: NeuromorphDevice,
+    event: *mut *mut c_void,
+    auto_reset: c_int
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphHwEventCreate(device, event, auto_reset)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphHwEventCreate(device, event, auto_reset)
+    }
+}
+
+/// Destroy a hardware event
+///
+/// # Safety
+/// Event must be a valid hardware event handle
+pub unsafe fn neuromorphHwEventDestroy(event: *mut c_void) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphHwEventDestroy(event)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphHwEventDestroy(event)
+    }
+}
+
+/// Signal a hardware event
+///
+/// # Safety
+/// Event must be a valid hardware event handle
+pub unsafe fn neuromorphHwEventSignal(event: *mut c_void) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphHwEventSignal(event)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphHwEventSignal(event)
+    }
+}
+
+/// Wait for a hardware event
+///
+/// # Safety
+/// Event must be a valid hardware event handle
+pub unsafe fn neuromorphHwEventWait(
+    event: *mut c_void,
+    timeout_ms: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphHwEventWait(event, timeout_ms)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphHwEventWait(event, timeout_ms)
+    }
+}
+
+/// Reset a hardware event
+///
+/// # Safety
+/// Event must be a valid hardware event handle
+pub unsafe fn neuromorphHwEventReset(event: *mut c_void) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphHwEventReset(event)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphHwEventReset(event)
+    }
+}
+
+// Memory mapping functions
+
+/// Map device memory to host address space
+///
+/// # Safety
+/// host_ptr and device_ptr must be valid pointers
+pub unsafe fn neuromorphMemMap(
+    host_ptr: *mut *mut c_void,
+    device_ptr: NeuromorphDevicePtr,
+    size: usize,
+    flags: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphMemMap(host_ptr, device_ptr, size, flags)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphMemMap(host_ptr, device_ptr, size, flags)
+    }
+}
+
+/// Unmap device memory from host address space
+///
+/// # Safety
+/// host_ptr must be a valid mapped pointer
+pub unsafe fn neuromorphMemUnmap(
+    host_ptr: *mut c_void,
+    size: usize
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphMemUnmap(host_ptr, size)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphMemUnmap(host_ptr, size)
+    }
+}
+
+// Power management functions
+
+/// Set device power state
+///
+/// # Safety
+/// Device must be valid
+pub unsafe fn neuromorphPowerSetState(
+    device: NeuromorphDevice,
+    power_state: c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphPowerSetState(device, power_state)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphPowerSetState(device, power_state)
+    }
+}
+
+/// Get device power state
+///
+/// # Safety
+/// Device must be valid, power_state must be a valid pointer
+pub unsafe fn neuromorphPowerGetState(
+    device: NeuromorphDevice,
+    power_state: *mut c_uint
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        simulator::neuromorphPowerGetState(device, power_state)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        hardware::neuromorphPowerGetState(device, power_state)
+    }
+}
+
 // Platform-specific implementations
 #[cfg(feature = "simulator")]
 mod simulator;
