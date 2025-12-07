@@ -28,6 +28,7 @@ struct SimulatorState {
     streams: HashMap<usize, SimulatedStream>,
     events: HashMap<usize, SimulatedEvent>,
     memory_pools: HashMap<usize, SimulatedMemory>,
+    graphs: HashMap<usize, SimulatedGraph>,
     next_handle: AtomicU32,
 }
 
@@ -40,6 +41,7 @@ impl SimulatorState {
             streams: HashMap::new(),
             events: HashMap::new(),
             memory_pools: HashMap::new(),
+            graphs: HashMap::new(),
             next_handle: AtomicU32::new(1),
         }
     }
@@ -152,6 +154,12 @@ struct SimulatedMemory {
 
 unsafe impl Send for SimulatedMemory {}
 unsafe impl Sync for SimulatedMemory {}
+
+/// Simulated graph/kernel
+struct SimulatedGraph {
+    data: Vec<u8>,
+    size: usize,
+}
 
 // Implementation of FFI functions
 
@@ -811,6 +819,49 @@ pub unsafe fn neuromorphMemUnmap(
     neuromorph_success!()
 }
 
+pub unsafe fn neuromorphGraphLoad(
+    graph: *mut NeuromorphKernel,
+    data: *const c_void,
+    size: usize
+) -> NeuromorphResult {
+    if graph.is_null() || data.is_null() || size == 0 {
+        return neuromorph_error!(NeuromorphError::ErrorInvalidValue);
+    }
+
+    let mut sim = SIMULATOR.lock().unwrap();
+    if !sim.initialized {
+        return neuromorph_error!(NeuromorphError::ErrorStartupFailure);
+    }
+
+    // Copy the graph data
+    let graph_data = std::slice::from_raw_parts(data as *const u8, size);
+    let simulated_graph = SimulatedGraph {
+        data: graph_data.to_vec(),
+        size,
+    };
+
+    let handle = sim.get_next_handle();
+    sim.graphs.insert(handle, simulated_graph);
+    *graph = handle as *mut c_void;
+
+    neuromorph_success!()
+}
+
+pub unsafe fn neuromorphGraphUnload(graph: NeuromorphKernel) -> NeuromorphResult {
+    if graph.is_null() {
+        return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+    }
+
+    let mut sim = SIMULATOR.lock().unwrap();
+    let handle = graph as usize;
+
+    if sim.graphs.remove(&handle).is_none() {
+        return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+    }
+
+    neuromorph_success!()
+}
+
 pub unsafe fn neuromorphPowerSetState(
     device: NeuromorphDevice,
     power_state: c_uint
@@ -819,7 +870,7 @@ pub unsafe fn neuromorphPowerSetState(
     if device < 0 || device >= sim.devices.len() as c_int {
         return neuromorph_error!(NeuromorphError::ErrorInvalidDevice);
     }
-    
+
     sim.devices[device as usize].power_state = power_state;
     neuromorph_success!()
 }

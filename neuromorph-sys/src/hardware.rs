@@ -430,6 +430,35 @@ pub unsafe fn neuromorphMemUnmap(
     neuromorph_success!()
 }
 
+pub unsafe fn neuromorphGraphLoad(
+    graph: *mut NeuromorphKernel,
+    data: *const c_void,
+    size: usize
+) -> NeuromorphResult {
+    if graph.is_null() || data.is_null() || size == 0 {
+        return neuromorph_error!(NeuromorphError::ErrorInvalidValue);
+    }
+
+    // TODO: Load graph to hardware
+    // This would involve:
+    // - Programming the neuromorphic processor with graph data
+    // - Setting up neuron/synapse configurations
+    // - Allocating hardware resources
+    neuromorph_error!(NeuromorphError::ErrorInvalidDevice)
+}
+
+pub unsafe fn neuromorphGraphUnload(graph: NeuromorphKernel) -> NeuromorphResult {
+    if graph.is_null() {
+        return neuromorph_error!(NeuromorphError::ErrorInvalidHandle);
+    }
+
+    // TODO: Unload graph from hardware
+    // This would involve:
+    // - Clearing neuron/synapse configurations
+    // - Freeing hardware resources
+    neuromorph_success!()
+}
+
 // Power management functions
 pub unsafe fn neuromorphPowerSetState(
     device: NeuromorphDevice,

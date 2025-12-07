@@ -408,7 +408,7 @@ pub unsafe fn neuromorphMemMap(
 }
 
 /// Unmap previously mapped device memory
-/// 
+///
 /// # Safety
 /// host_ptr must be from a previous neuromorphMemMap call
 pub unsafe fn neuromorphMemUnmap(
@@ -422,6 +422,62 @@ pub unsafe fn neuromorphMemUnmap(
     #[cfg(feature = "hardware")]
     {
         crate::hardware::neuromorphMemUnmap(host_ptr, size)
+    }
+}
+
+/// Launch a neuromorphic kernel
+///
+/// # Safety
+/// All parameters must be valid
+pub unsafe fn neuromorphLaunchKernel(
+    kernel: NeuromorphKernel,
+    grid_dim: NeuromorphDim3,
+    block_dim: NeuromorphDim3,
+    args: *mut *mut c_void,
+    shared_mem: usize,
+    stream: NeuromorphStream
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        crate::simulator::neuromorphLaunchKernel(kernel, grid_dim, block_dim, args, shared_mem, stream)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        crate::hardware::neuromorphLaunchKernel(kernel, grid_dim, block_dim, args, shared_mem, stream)
+    }
+}
+
+/// Load a neuromorphic graph/kernel from binary data
+///
+/// # Safety
+/// data must be a valid pointer to graph binary data, size must be correct
+pub unsafe fn neuromorphGraphLoad(
+    graph: *mut NeuromorphKernel,
+    data: *const c_void,
+    size: usize
+) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        crate::simulator::neuromorphGraphLoad(graph, data, size)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        crate::hardware::neuromorphGraphLoad(graph, data, size)
+    }
+}
+
+/// Unload a neuromorphic graph/kernel
+///
+/// # Safety
+/// graph must be a valid kernel handle
+pub unsafe fn neuromorphGraphUnload(graph: NeuromorphKernel) -> NeuromorphResult {
+    #[cfg(feature = "simulator")]
+    {
+        crate::simulator::neuromorphGraphUnload(graph)
+    }
+    #[cfg(feature = "hardware")]
+    {
+        crate::hardware::neuromorphGraphUnload(graph)
     }
 }
 

@@ -359,6 +359,84 @@ impl Drop for Event {
     }
 }
 
+/// Safe wrapper for Neuromorph kernel/graph
+///
+/// Represents a loaded neuromorphic graph/kernel, similar to a CUDA kernel.
+/// Automatically unloads the kernel when dropped.
+#[derive(Debug)]
+pub struct Kernel {
+    handle: NeuromorphKernel,
+}
+
+impl Kernel {
+    /// Load a kernel from binary data
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        unsafe {
+            let mut handle: NeuromorphKernel = ptr::null_mut();
+            let result = neuromorphGraphLoad(&mut handle, data.as_ptr() as *const std::os::raw::c_void, data.len());
+            convert_error(result)?;
+            Ok(Kernel { handle })
+        }
+    }
+
+    /// Launch the kernel asynchronously for a specified number of ticks
+    ///
+    /// This method returns immediately after queuing the launch. The kernel will
+    /// simulate execution for the specified number of ticks and signal completion
+    /// via the provided event.
+    ///
+    /// # Parameters
+    /// - `ticks`: Number of simulation ticks to run
+    /// - `stream`: Stream to launch on
+    /// - `completion_event`: Optional event to record when launch completes
+    pub fn launch(&self, ticks: u32, stream: &Stream, completion_event: Option<&Event>) -> Result<()> {
+        // For now, simulate a simple kernel launch
+        // In a real implementation, this would configure the neuromorphic processor
+        // with the graph and start execution
+
+        unsafe {
+            // Use a dummy grid/block configuration for now
+            let grid_dim = NeuromorphDim3 { x: 1, y: 1, z: 1 };
+            let block_dim = NeuromorphDim3 { x: 1, y: 1, z: 1 };
+
+            // Prepare arguments (ticks parameter)
+            let args = vec![&ticks as *const u32 as *mut std::os::raw::c_void];
+
+            let result = neuromorphLaunchKernel(
+                self.handle,
+                grid_dim,
+                block_dim,
+                args.as_ptr() as *mut *mut std::os::raw::c_void,
+                0, // shared memory
+                stream.handle(),
+            );
+            convert_error(result)?;
+
+            // Record completion event if provided
+            if let Some(event) = completion_event {
+                event.record(stream)?;
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Get the raw kernel handle for use with low-level functions
+    pub fn handle(&self) -> NeuromorphKernel {
+        self.handle
+    }
+}
+
+impl Drop for Kernel {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.handle.is_null() {
+                let _ = neuromorphGraphUnload(self.handle);
+            }
+        }
+    }
+}
+
 /// GPU-style memory allocator for managing on-device RAM and sub-allocation
 ///
 /// This allocator provides sub-allocation capabilities on top of neuromorph device memory,
@@ -1233,6 +1311,68 @@ mod tests {
 
         assert_eq!(data1, result1);
         assert_eq!(data2, result2);
+    }
+
+    #[test]
+    fn test_kernel_load_and_launch() {
+        init().unwrap();
+        let stream = Stream::new().unwrap();
+        let event = Event::new().unwrap();
+
+        // Create some dummy graph data (in a real implementation, this would be a compiled SNN/DNN graph)
+        let graph_data = vec![0xAAu8; 1024];
+
+        // Load the kernel
+        let kernel = Kernel::from_bytes(&graph_data).unwrap();
+
+        // Launch the kernel for 100 ticks
+        assert!(kernel.launch(100, &stream, Some(&event)).is_ok());
+
+        // Wait for completion
+        assert!(event.synchronize().is_ok());
+
+        // Kernel will be automatically unloaded
+    }
+
+    #[test]
+    fn test_kernel_launch_without_event() {
+        init().unwrap();
+        let stream = Stream::new().unwrap();
+
+        let graph_data = vec![0xBBu8; 512];
+        let kernel = Kernel::from_bytes(&graph_data).unwrap();
+
+        // Launch without completion event
+        assert!(kernel.launch(50, &stream, None).is_ok());
+
+        // Synchronize stream to ensure completion
+        assert!(stream.synchronize().is_ok());
+    }
+
+    #[test]
+    fn test_kernel_invalid_data() {
+        init().unwrap();
+
+        // Try to load empty data (should fail)
+        let result = Kernel::from_bytes(&[]);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), NeuromorphError::ErrorInvalidValue);
+    }
+
+    #[test]
+    fn test_kernel_multiple_launches() {
+        init().unwrap();
+        let stream = Stream::new().unwrap();
+
+        let graph_data = vec![0xCCu8; 256];
+        let kernel = Kernel::from_bytes(&graph_data).unwrap();
+
+        // Launch multiple times
+        for ticks in [10, 20, 30] {
+            let event = Event::new().unwrap();
+            assert!(kernel.launch(ticks, &stream, Some(&event)).is_ok());
+            assert!(event.synchronize().is_ok());
+        }
     }
 
 }
