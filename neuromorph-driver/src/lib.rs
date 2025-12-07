@@ -273,9 +273,16 @@ impl Stream {
 
     /// Synchronize with the stream (wait for all operations to complete)
     pub fn synchronize(&self) -> Result<()> {
+        // First synchronize the worker thread to ensure all queued commands are submitted
         let (barrier_sender, barrier_receiver) = mpsc::channel();
         self.sender.send(Command::Barrier { sender: barrier_sender }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
         barrier_receiver.recv().map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+
+        // Then synchronize the underlying HAL stream to ensure execution is complete
+        unsafe {
+            let result = neuromorphStreamSynchronize(self.handle);
+            convert_error(result)?;
+        }
         Ok(())
     }
 
@@ -686,6 +693,43 @@ pub unsafe fn launch_kernel(
     Ok(())
 }
 
+/// Perform a synchronous (blocking) memory copy operation
+///
+/// This function performs a memory copy operation and blocks until completion.
+/// It is equivalent to calling neuromorphMemcpy directly.
+///
+/// # Safety
+/// dst and src must be valid pointers for the specified size and kind
+pub unsafe fn memcpy_sync(
+    dst: *mut std::os::raw::c_void,
+    src: *const std::os::raw::c_void,
+    size: usize,
+    kind: NeuromorphMemcpyKind,
+) -> Result<()> {
+    let result = neuromorph_sys::neuromorphMemcpy(dst, src, size, kind);
+    convert_error(result)
+}
+
+/// Perform an asynchronous (non-blocking) memory copy operation on a stream
+///
+/// This function queues a memory copy operation on the specified stream and returns
+/// immediately. The operation will be executed asynchronously by the stream's worker thread.
+/// Use stream.synchronize() to wait for completion.
+///
+/// # Safety
+/// dst and src must be valid pointers for the specified size and kind,
+/// stream must be a valid Stream handle
+pub unsafe fn memcpy_async(
+    dst: *mut std::os::raw::c_void,
+    src: *const std::os::raw::c_void,
+    size: usize,
+    kind: NeuromorphMemcpyKind,
+    stream: &Stream,
+) -> Result<()> {
+    let result = neuromorph_sys::neuromorphMemcpyAsync(dst, src, size, kind, stream.handle());
+    convert_error(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,6 +1102,137 @@ mod tests {
         let block4 = allocator.allocate(400, 8).unwrap();
         assert_eq!(block4.offset(), 0); // Should start at beginning
         assert_eq!(block4.size(), 400);
+    }
+
+    #[test]
+    fn test_memcpy_sync() {
+        init().unwrap();
+        let memory = DeviceMemory::new(1024).unwrap();
+
+        let test_data = vec![0xABu8; 512];
+
+        // Copy from host to device synchronously
+        unsafe {
+            memcpy_sync(
+                memory.handle() as *mut std::os::raw::c_void,
+                test_data.as_ptr() as *const std::os::raw::c_void,
+                test_data.len(),
+                NeuromorphMemcpyKind::HostToDevice,
+            ).unwrap();
+        }
+
+        // Copy from device to host synchronously
+        let mut result_data = vec![0u8; 512];
+        unsafe {
+            memcpy_sync(
+                result_data.as_mut_ptr() as *mut std::os::raw::c_void,
+                memory.handle() as *const std::os::raw::c_void,
+                result_data.len(),
+                NeuromorphMemcpyKind::DeviceToHost,
+            ).unwrap();
+        }
+
+        // Verify data
+        assert_eq!(test_data, result_data);
+    }
+
+    #[test]
+    fn test_memcpy_async() {
+        init().unwrap();
+        let memory = DeviceMemory::new(1024).unwrap();
+        let stream = Stream::new().unwrap();
+
+        let test_data = vec![0xCDu8; 512];
+
+        // Copy from host to device asynchronously
+        unsafe {
+            memcpy_async(
+                memory.handle() as *mut std::os::raw::c_void,
+                test_data.as_ptr() as *const std::os::raw::c_void,
+                test_data.len(),
+                NeuromorphMemcpyKind::HostToDevice,
+                &stream,
+            ).unwrap();
+        }
+
+        // Synchronize to ensure completion
+        stream.synchronize().unwrap();
+
+        // Copy from device to host asynchronously
+        let mut result_data = vec![0u8; 512];
+        unsafe {
+            memcpy_async(
+                result_data.as_mut_ptr() as *mut std::os::raw::c_void,
+                memory.handle() as *const std::os::raw::c_void,
+                result_data.len(),
+                NeuromorphMemcpyKind::DeviceToHost,
+                &stream,
+            ).unwrap();
+        }
+
+        // Synchronize to ensure completion
+        stream.synchronize().unwrap();
+
+        // Verify data
+        assert_eq!(test_data, result_data);
+    }
+
+    #[test]
+    fn test_memcpy_async_concurrent() {
+        init().unwrap();
+        let memory1 = DeviceMemory::new(1024).unwrap();
+        let memory2 = DeviceMemory::new(1024).unwrap();
+        let stream1 = Stream::new().unwrap();
+        let stream2 = Stream::new().unwrap();
+
+        let data1 = vec![1u8; 512];
+        let data2 = vec![2u8; 512];
+
+        // Queue async copies on both streams
+        unsafe {
+            memcpy_async(
+                memory1.handle() as *mut std::os::raw::c_void,
+                data1.as_ptr() as *const std::os::raw::c_void,
+                data1.len(),
+                NeuromorphMemcpyKind::HostToDevice,
+                &stream1,
+            ).unwrap();
+
+            memcpy_async(
+                memory2.handle() as *mut std::os::raw::c_void,
+                data2.as_ptr() as *const std::os::raw::c_void,
+                data2.len(),
+                NeuromorphMemcpyKind::HostToDevice,
+                &stream2,
+            ).unwrap();
+        }
+
+        // Synchronize both streams
+        stream1.synchronize().unwrap();
+        stream2.synchronize().unwrap();
+
+        // Verify results
+        let mut result1 = vec![0u8; 512];
+        let mut result2 = vec![0u8; 512];
+
+        unsafe {
+            memcpy_sync(
+                result1.as_mut_ptr() as *mut std::os::raw::c_void,
+                memory1.handle() as *const std::os::raw::c_void,
+                result1.len(),
+                NeuromorphMemcpyKind::DeviceToHost,
+            ).unwrap();
+
+            memcpy_sync(
+                result2.as_mut_ptr() as *mut std::os::raw::c_void,
+                memory2.handle() as *const std::os::raw::c_void,
+                result2.len(),
+                NeuromorphMemcpyKind::DeviceToHost,
+            ).unwrap();
+        }
+
+        assert_eq!(data1, result1);
+        assert_eq!(data2, result2);
     }
 
 }

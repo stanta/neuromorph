@@ -438,17 +438,17 @@ pub unsafe fn neuromorphStreamSynchronize(hStream: NeuromorphStream) -> Neuromor
                         ptr::copy_nonoverlapping(src_ptr as *const u8, dst_ptr as *mut u8, *size);
                     },
                     NeuromorphMemcpyKind::HostToDevice => {
-                        if let Some(memory) = sim.memory_pools.get(&dst) {
+                        if let Some(memory) = sim.memory_pools.get(dst) {
                             ptr::copy_nonoverlapping(src_ptr as *const u8, memory.ptr as *mut u8, *size);
                         }
                     },
                     NeuromorphMemcpyKind::DeviceToHost => {
-                        if let Some(memory) = sim.memory_pools.get(&src) {
+                        if let Some(memory) = sim.memory_pools.get(src) {
                             ptr::copy_nonoverlapping(memory.ptr as *const u8, dst_ptr as *mut u8, *size);
                         }
                     },
                     NeuromorphMemcpyKind::DeviceToDevice => {
-                        if let (Some(src_mem), Some(dst_mem)) = (sim.memory_pools.get(&src), sim.memory_pools.get(&dst)) {
+                        if let (Some(src_mem), Some(dst_mem)) = (sim.memory_pools.get(src), sim.memory_pools.get(dst)) {
                             ptr::copy_nonoverlapping(src_mem.ptr as *const u8, dst_mem.ptr as *mut u8, *size);
                         }
                     }
