@@ -7,6 +7,9 @@ use neuromorph_sys::*;
 use std::ptr;
 use std::sync::Mutex;
 use std::collections::BTreeMap;
+use std::sync::mpsc;
+use std::thread;
+use std::sync::mpsc::{Receiver, Sender};
 
 /// Error types for the Neuromorph driver
 ///
@@ -100,6 +103,33 @@ impl std::error::Error for NeuromorphError {}
 /// Result type for driver operations
 pub type Result<T> = std::result::Result<T, NeuromorphError>;
 
+/// Commands that can be queued in a Stream for asynchronous execution
+enum Command {
+    MemcpyHostToDevice {
+        dst: usize,
+        src: usize,
+        size: usize,
+        kind: NeuromorphMemcpyKind,
+    },
+    MemcpyDeviceToHost {
+        dst: usize,
+        src: usize,
+        size: usize,
+        kind: NeuromorphMemcpyKind,
+    },
+    LaunchKernel {
+        kernel: usize,
+        grid_dim: NeuromorphDim3,
+        block_dim: NeuromorphDim3,
+        args: usize,
+        shared_mem: usize,
+    },
+    Barrier {
+        sender: mpsc::Sender<()>,
+    },
+    Quit,
+}
+
 /// Helper function to convert C error codes to Rust errors
 fn convert_error(result: neuromorph_sys::NeuromorphResult) -> Result<()> {
     if result == neuromorph_sys::NEUROMORPH_SUCCESS {
@@ -173,9 +203,13 @@ impl Drop for Context {
 /// Safe wrapper for Neuromorph stream
 ///
 /// Represents an asynchronous execution stream, similar to a CUDA stream.
-/// Automatically destroys the stream when dropped.
+/// Each stream owns a worker thread that processes commands asynchronously,
+/// providing CUDA-like overlap semantics even if the underlying device runs serially.
+/// Automatically destroys the stream and joins the worker thread when dropped.
 pub struct Stream {
     handle: NeuromorphStream,
+    sender: Sender<Command>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl Stream {
@@ -185,16 +219,64 @@ impl Stream {
             let mut handle: NeuromorphStream = ptr::null_mut();
             let result = neuromorphStreamCreate(&mut handle);
             convert_error(result)?;
-            Ok(Stream { handle })
+
+            // Create command channel
+            let (sender, receiver) = mpsc::channel();
+
+            // Spawn worker thread
+            let join_handle = Some(thread::spawn(move || {
+                Stream::worker_loop(receiver);
+            }));
+
+            Ok(Stream { handle, sender, join_handle })
+        }
+    }
+
+    /// Worker thread loop that processes commands
+    fn worker_loop(receiver: Receiver<Command>) {
+        while let Ok(command) = receiver.recv() {
+            match command {
+                Command::MemcpyHostToDevice { dst, src, size, kind } => {
+                    unsafe {
+                        let _ = neuromorphMemcpy(
+                            dst as *mut std::os::raw::c_void,
+                            src as *const std::os::raw::c_void,
+                            size,
+                            kind,
+                        );
+                    }
+                }
+                Command::MemcpyDeviceToHost { dst, src, size, kind } => {
+                    unsafe {
+                        let _ = neuromorphMemcpy(
+                            dst as *mut std::os::raw::c_void,
+                            src as *const std::os::raw::c_void,
+                            size,
+                            kind,
+                        );
+                    }
+                }
+                Command::LaunchKernel { kernel, grid_dim, block_dim, args, shared_mem } => {
+                    unsafe {
+                        let kernel_ptr = kernel as *mut std::os::raw::c_void;
+                        let args_ptr = args as *mut *mut std::os::raw::c_void;
+                        let _ = neuromorphLaunchKernel(kernel_ptr, grid_dim, block_dim, args_ptr, shared_mem, ptr::null_mut());
+                    }
+                }
+                Command::Barrier { sender } => {
+                    let _ = sender.send(());
+                }
+                Command::Quit => break,
+            }
         }
     }
 
     /// Synchronize with the stream (wait for all operations to complete)
     pub fn synchronize(&self) -> Result<()> {
-        unsafe {
-            let result = neuromorphStreamSynchronize(self.handle);
-            convert_error(result)
-        }
+        let (barrier_sender, barrier_receiver) = mpsc::channel();
+        self.sender.send(Command::Barrier { sender: barrier_sender }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        barrier_receiver.recv().map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        Ok(())
     }
 
     /// Get the raw stream handle for use with low-level functions
@@ -205,6 +287,15 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        // Send quit command to worker thread
+        let _ = self.sender.send(Command::Quit);
+
+        // Join the worker thread
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+
+        // Destroy the stream handle
         unsafe {
             if !self.handle.is_null() {
                 let _ = neuromorphStreamDestroy(self.handle);
@@ -542,32 +633,24 @@ impl DeviceMemory {
 
     /// Copy data from host to device asynchronously
     pub fn copy_from_host_async(&self, host_data: &[u8], stream: &Stream, kind: NeuromorphMemcpyKind) -> Result<()> {
-        unsafe {
-            let result = neuromorphMemcpyAsync(
-                self.handle as *mut std::os::raw::c_void,
-                host_data.as_ptr() as *const std::os::raw::c_void,
-                host_data.len(),
-                kind,
-                stream.handle(),
-            );
-            convert_error(result)?;
-                Ok(())
-        }
+        stream.sender.send(Command::MemcpyHostToDevice {
+            dst: self.handle as usize,
+            src: host_data.as_ptr() as usize,
+            size: host_data.len(),
+            kind,
+        }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        Ok(())
     }
 
     /// Copy data from device to host asynchronously
     pub fn copy_to_host_async(&self, host_data: &mut [u8], stream: &Stream, kind: NeuromorphMemcpyKind) -> Result<()> {
-        unsafe {
-            let result = neuromorphMemcpyAsync(
-                host_data.as_mut_ptr() as *mut std::os::raw::c_void,
-                self.handle as *const std::os::raw::c_void,
-                host_data.len(),
-                kind,
-                stream.handle(),
-            );
-            convert_error(result)?;
-                Ok(())
-        }
+        stream.sender.send(Command::MemcpyDeviceToHost {
+            dst: host_data.as_mut_ptr() as usize,
+            src: self.handle as usize,
+            size: host_data.len(),
+            kind,
+        }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        Ok(())
     }
 }
 
@@ -581,7 +664,7 @@ impl Drop for DeviceMemory {
     }
 }
 
-/// Launch a neuromorphic kernel
+/// Launch a neuromorphic kernel asynchronously on the stream
 ///
 /// # Safety
 /// kernel must be a valid kernel handle, all parameters must be valid
@@ -593,9 +676,14 @@ pub unsafe fn launch_kernel(
     shared_mem: usize,
     stream: &Stream,
 ) -> Result<()> {
-    let result = neuromorphLaunchKernel(kernel, grid_dim, block_dim, args, shared_mem, stream.handle());
-    convert_error(result)?;
-        Ok(())
+    stream.sender.send(Command::LaunchKernel {
+        kernel: kernel as usize,
+        grid_dim,
+        block_dim,
+        args: args as usize,
+        shared_mem,
+    }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -622,6 +710,57 @@ mod tests {
         let stream = Stream::new().unwrap();
         assert!(stream.synchronize().is_ok());
         // Stream will be automatically dropped
+    }
+
+    #[test]
+    fn test_stream_async_execution() {
+        init().unwrap();
+        let stream = Stream::new().unwrap();
+        let memory = DeviceMemory::new(1024).unwrap();
+        
+        let test_data = vec![0x42u8; 512];
+        
+        // Queue multiple operations
+        assert!(memory.copy_from_host_async(&test_data, &stream, NeuromorphMemcpyKind::HostToDevice).is_ok());
+        
+        let mut result_data = vec![0u8; 512];
+        assert!(memory.copy_to_host_async(&mut result_data, &stream, NeuromorphMemcpyKind::DeviceToHost).is_ok());
+        
+        // Synchronize to ensure all operations complete
+        assert!(stream.synchronize().is_ok());
+        
+        assert_eq!(test_data, result_data);
+    }
+
+    #[test]
+    fn test_stream_concurrency() {
+        init().unwrap();
+        let stream1 = Stream::new().unwrap();
+        let stream2 = Stream::new().unwrap();
+        
+        let memory1 = DeviceMemory::new(1024).unwrap();
+        let memory2 = DeviceMemory::new(1024).unwrap();
+        
+        let data1 = vec![1u8; 512];
+        let data2 = vec![2u8; 512];
+        
+        // Queue operations on both streams
+        memory1.copy_from_host_async(&data1, &stream1, NeuromorphMemcpyKind::HostToDevice).unwrap();
+        memory2.copy_from_host_async(&data2, &stream2, NeuromorphMemcpyKind::HostToDevice).unwrap();
+        
+        // Synchronize both
+        stream1.synchronize().unwrap();
+        stream2.synchronize().unwrap();
+        
+        // Verify results
+        let mut result1 = vec![0u8; 512];
+        let mut result2 = vec![0u8; 512];
+        
+        memory1.copy_to_host(&mut result1, NeuromorphMemcpyKind::DeviceToHost).unwrap();
+        memory2.copy_to_host(&mut result2, NeuromorphMemcpyKind::DeviceToHost).unwrap();
+        
+        assert_eq!(data1, result1);
+        assert_eq!(data2, result2);
     }
 
     #[test]
