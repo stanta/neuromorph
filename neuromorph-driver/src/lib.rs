@@ -214,6 +214,11 @@ pub struct Stream {
 
 impl Stream {
     /// Create a new stream
+    ///
+    /// # Warning
+    /// Each `Stream` spawns a dedicated OS thread to manage asynchronous operations.
+    /// Creating a large number of streams may exhaust system resources.
+    /// Consider using a thread pool or limiting the number of active streams.
     pub fn new() -> Result<Self> {
         unsafe {
             let mut handle: NeuromorphStream = ptr::null_mut();
@@ -804,8 +809,39 @@ pub unsafe fn memcpy_async(
     kind: NeuromorphMemcpyKind,
     stream: &Stream,
 ) -> Result<()> {
-    let result = neuromorph_sys::neuromorphMemcpyAsync(dst, src, size, kind, stream.handle());
-    convert_error(result)
+    // Determine direction based on kind to use appropriate Command variant
+    // Note: The underlying worker loop handles both variants identically by calling neuromorphMemcpy
+    // but we need to pick one to satisfy the enum.
+    match kind {
+        NeuromorphMemcpyKind::HostToDevice => {
+            stream.sender.send(Command::MemcpyHostToDevice {
+                dst: dst as usize,
+                src: src as usize,
+                size,
+                kind,
+            }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        },
+        NeuromorphMemcpyKind::DeviceToHost => {
+            stream.sender.send(Command::MemcpyDeviceToHost {
+                dst: dst as usize,
+                src: src as usize,
+                size,
+                kind,
+            }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        },
+        _ => {
+            // For DeviceToDevice or Default, we can use either variant as the worker
+            // just extracts the fields and calls neuromorphMemcpy.
+            // Let's default to HostToDevice variant for simplicity as it carries the same data.
+            stream.sender.send(Command::MemcpyHostToDevice {
+                dst: dst as usize,
+                src: src as usize,
+                size,
+                kind,
+            }).map_err(|_| NeuromorphError::ErrorFatalInternalError)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
