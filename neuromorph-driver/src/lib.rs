@@ -373,6 +373,13 @@ pub struct Kernel {
     handle: NeuromorphKernel,
 }
 
+// SAFETY: Kernel is a thin RAII wrapper around an opaque device handle.
+// The underlying neuromorph-sys simulator backend is internally synchronized.
+// For the (current) simulator/hardware abstraction, moving the handle across
+// threads is equivalent to moving an integer/opaque pointer.
+unsafe impl Send for Kernel {}
+unsafe impl Sync for Kernel {}
+
 impl Kernel {
     /// Load a kernel from binary data
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
@@ -671,6 +678,13 @@ pub struct DeviceMemory {
     handle: NeuromorphDevicePtr,
     size: usize,
 }
+
+// SAFETY: DeviceMemory is a thin RAII wrapper around an opaque device pointer.
+// The pointer represents a device allocation managed by the neuromorph runtime.
+// The simulator backend uses global synchronization; the hardware backend is
+// expected to be thread-safe at the driver boundary.
+unsafe impl Send for DeviceMemory {}
+unsafe impl Sync for DeviceMemory {}
 
 impl DeviceMemory {
     /// Allocate device memory
