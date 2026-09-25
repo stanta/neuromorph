@@ -1,0 +1,16 @@
+[package]
+name = "danma-net"
+version = "0.1.0"
+edition = "2021"
+description = "TCP transport and bounded discovery for DANMA CPU neurons"
+license = "MIT"
+
+[[bin]]
+name = "danma-node"
+path = "src/main.rs"
+
+[dependencies]
+danma-core = { path = "../danma-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
