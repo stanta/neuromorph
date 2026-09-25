@@ -426,7 +426,7 @@ impl NodeState {
                     expires_at_ms: now.saturating_add(ttl_ms),
                     hops_left: gradient_hops,
                 };
-                let result = self.shard.backward(target, packet, now).await;
+                let result = self.shard.backward_live(target, packet, deadline).await;
                 match result {
                     Err(err) => error_response(&format!("backward_{err:?}")),
                     Ok(FeedbackStatus::Pending { remaining }) => {
