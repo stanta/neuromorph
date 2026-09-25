@@ -201,3 +201,34 @@ async fn oversized_frame_does_not_stop_the_node() {
     let alive = call(addr[0], json!({"kind":"routes"})).await;
     assert_eq!(alive["kind"], "routes_result");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_trace_is_addressable_across_processes() {
+    let (_children, addr) = cluster().await;
+    let entry = addr[0];
+    let out = call(entry, json!({
+        "kind":"forward","target":2,"event_id":50,"trace_id":77,"route_hops":4,
+        "inputs":[{"from":1,"source_event_id":40,"value":2.0}],
+        "expected":[{"kind":"teacher"}]
+    })).await;
+    assert_eq!(out["output"], 6.0);
+    let active = call(entry, json!({
+        "kind":"trace","target":2,"event_id":50,"route_hops":4
+    })).await;
+    assert_eq!(active["kind"], "trace_result");
+    assert_eq!(active["trace"]["trace_id"], 77);
+    assert_eq!(active["trace"]["parameter_version"], 0);
+    assert_eq!(active["trace"]["output"], 6.0);
+    assert_eq!(active["trace"]["expected_contributions"], 1);
+
+    let trained = call(entry, json!({
+        "kind":"backward","target":2,"event_id":50,
+        "from":{"kind":"teacher"},"gradient":1.0,
+        "ttl_ms":2000,"gradient_hops":1,"route_hops":4
+    })).await;
+    assert_eq!(trained["status"], "applied");
+    let closed = call(entry, json!({
+        "kind":"trace","target":2,"event_id":50,"route_hops":4
+    })).await;
+    assert!(closed["trace"].is_null(), "completed trace should be evicted");
+}
