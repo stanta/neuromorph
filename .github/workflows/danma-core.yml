@@ -1,8 +1,8 @@
-name: DANMA CPU and TCP MVP
+name: DANMA CPU shards and TCP MVP
 
 on:
   push:
-    branches: [main, feat/danma-multineuron-cpu-shards]
+    branches: [main]
     paths: [danma-core/**, danma-net/**, danma-shard/**, Cargo.toml, Cargo.lock, .github/workflows/danma-core.yml]
   pull_request:
     paths: [danma-core/**, danma-net/**, danma-shard/**, Cargo.toml, Cargo.lock, .github/workflows/danma-core.yml]
@@ -21,3 +21,5 @@ jobs:
         run: cargo test --locked -p danma-shard --all-targets
       - name: Test three-process TCP network
         run: cargo test --locked -p danma-net --all-targets
+      - name: Lint targeted Rust crates
+        run: cargo clippy --locked -p danma-core -p danma-shard -p danma-net --all-targets -- -D warnings
