@@ -1,5 +1,16 @@
 # Neuromorph: CUDA-Compatible Neuromorphic Computing Platform
 
+> **Current DANMA CPU-first MVP (September 2026):** The active development
+> path uses [danma-core](danma-core/README.md),
+> [danma-shard](danma-shard/README.md), [danma-net](danma-net/README.md)
+> and the [PyTorch autograd bridge](python/README.md). The bridge runs
+> distributed forward/backward on Rust CPU neurons and returns ordinary
+> PyTorch CPU tensors. It is **not** a registered native PrivateUse1 device:
+> torch.device("danma:0"), GPU emulation and full CUDA driver compatibility
+> are not implemented. The older CUDA-style material below documents a
+> separate experimental prototype, not the current DANMA execution path.
+
+
 A high-performance neuromorphic computing platform that provides a **CUDA-compatible FFI layer** for seamless integration with existing GPU-accelerated applications. Built in Rust with modern safety guarantees and comprehensive test coverage.
 
 [Project Pitch Deck](https://drive.google.com/file/d/1k7-O1dGgwFwPmAAxjJ8pOZfV8erfnmhv/view?usp=sharing)
