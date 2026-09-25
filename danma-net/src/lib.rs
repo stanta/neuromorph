@@ -224,6 +224,9 @@ impl NodeState {
                     return error_response("untrusted_or_oversized_gossip");
                 }
                 let mut table = self.routes.write().await;
+                // Stage the full advertisement batch: bad routes must not
+                // partially mutate the control-plane routing table.
+                let mut staged = table.clone();
                 for adv in routes {
                     if adv.owner == 0
                         || adv.neuron == 0
@@ -233,7 +236,7 @@ impl NodeState {
                     {
                         return error_response("invalid_route_owner");
                     }
-                    if let Some(current) = table.get(&adv.neuron) {
+                    if let Some(current) = staged.get(&adv.neuron) {
                         if current.owner != adv.owner {
                             return error_response("route_owner_conflict");
                         }
@@ -241,10 +244,10 @@ impl NodeState {
                             continue;
                         }
                     }
-                    if table.len() >= MAX_ADVERTISED_ROUTES && !table.contains_key(&adv.neuron) {
+                    if staged.len() >= MAX_ADVERTISED_ROUTES && !staged.contains_key(&adv.neuron) {
                         return error_response("route_table_full");
                     }
-                    table.insert(
+                    staged.insert(
                         adv.neuron,
                         Route {
                             owner: adv.owner,
@@ -252,6 +255,7 @@ impl NodeState {
                         },
                     );
                 }
+                *table = staged;
                 json!({"kind":"gossip_accepted"})
             }
             Message::Inspect { target, route_hops } => {
