@@ -1,9 +1,9 @@
-name: DANMA CPU core
+name: DANMA CPU and TCP MVP
 
 on:
   push:
-    branches: [feat/danma-cpu-runtime-mvp]
-    paths: [danma-core/**, Cargo.toml, .github/workflows/danma-core.yml]
+    branches: [main, feat/danma-tcp-gossip-3node]
+    paths: [danma-core/**, danma-net/**, Cargo.toml, Cargo.lock, .github/workflows/danma-core.yml]
   pull_request:
     paths: [danma-core/**, Cargo.toml, .github/workflows/danma-core.yml]
 
@@ -16,4 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test standalone CPU core
-        run: cargo test -p danma-core --all-targets
+        run: cargo test --locked -p danma-core --all-targets
+      - name: Test three-process TCP network
+        run: cargo test --locked -p danma-net --all-targets
