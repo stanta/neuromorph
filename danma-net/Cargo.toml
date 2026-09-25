@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 danma-core = { path = "../danma-core" }
+danma-shard = { path = "../danma-shard" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
