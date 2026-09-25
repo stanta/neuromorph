@@ -157,7 +157,7 @@ class DANMALinear(torch.nn.Module):
         input_ids: Sequence[int],
         feedback_ttl_ms: int = 3_000,
         route_hops: int = 4,
-        max_batch: int = 32,
+        max_batch: int = 8,
     ) -> None:
         super().__init__()
         if not isinstance(client, DANMAClient):
@@ -178,8 +178,11 @@ class DANMALinear(torch.nn.Module):
             raise ValueError("feedback_ttl_ms must be 1..10000")
         if type(route_hops) is not int or not 1 <= route_hops <= 255:
             raise ValueError("route_hops must be 1..255")
-        if type(max_batch) is not int or not 1 <= max_batch <= 32:
-            raise ValueError("max_batch must be 1..32")
+        # danma-node currently sets max_staleness_versions=8; all batch
+        # activations share the forward-time weight version. A ninth prior
+        # update is rejected, so never accept a batch of ten samples.
+        if type(max_batch) is not int or not 1 <= max_batch <= 9:
+            raise ValueError("max_batch must be 1..9 (remote staleness budget)")
 
         self.client = client
         self.feedback_ttl_ms = feedback_ttl_ms
