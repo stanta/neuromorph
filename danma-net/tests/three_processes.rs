@@ -168,3 +168,36 @@ async fn unknown_target_is_a_reported_error() {
     })).await;
     assert_eq!(result["kind"], "error");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_gossip_batch_does_not_publish_a_partial_route() {
+    let (_children, addr) = cluster().await;
+    // A valid advertisement followed by an invalid owner must not leave
+    // neuron 4 routable. Gossip is a control-plane atomic update.
+    let reply = call(addr[0], json!({
+        "kind":"gossip", "from_node":2,
+        "routes":[
+            {"owner":2,"neuron":4,"epoch":2},
+            {"owner":777,"neuron":5,"epoch":2}
+        ]
+    })).await;
+    assert_eq!(reply["kind"], "error");
+    let routes = call(addr[0], json!({"kind":"routes"})).await;
+    assert!(routes["routes"].get("4").is_none(), "invalid batch installed a route");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_frame_does_not_stop_the_node() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (_children, addr) = cluster().await;
+    let mut socket = tokio::net::TcpStream::connect(addr[0]).await.unwrap();
+    socket.write_u32(65_537).await.unwrap();
+    // The length alone exceeds the 64 KiB bound. The node closes this
+    // connection without allocating a user-specified buffer.
+    let mut byte = [0_u8; 1];
+    let read = timeout(Duration::from_secs(2), socket.read(&mut byte)).await;
+    assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))));
+    let alive = call(addr[0], json!({"kind":"routes"})).await;
+    assert_eq!(alive["kind"], "routes_result");
+}
