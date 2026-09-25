@@ -195,6 +195,18 @@ class InputContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disjoint"):
             DANMALinear(self.client, neuron_ids=(11,), input_ids=(11, 902))
 
+    def test_rejects_batch_above_current_remote_staleness_budget(self) -> None:
+        # Current danma-node accepts at most 8 intervening parameter versions
+        # for a stored forward trace. A single batch must not partially train
+        # 9 samples then fail after earlier samples have committed.
+        with self.assertRaisesRegex(ValueError, "staleness"):
+            DANMALinear(
+                self.client,
+                neuron_ids=(11,),
+                input_ids=(901, 902),
+                max_batch=10,
+            )
+
     def test_batch_limit_is_checked_before_network(self) -> None:
         model = DANMALinear(
             self.client,
