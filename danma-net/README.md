@@ -25,8 +25,9 @@ CUDA and GPU support are out of scope.
 - An activation specifies expected downstream contributions before dispatch.
   A neuron aggregates distinct contributions and applies one weight update;
   repeated delivery of an already-seen contribution does not update twice.
-  Relative feedback TTL decreases across relays; gradient hops are separate
-  from routing hops. Routes are neither globally consistent nor transactional.
+  Relative feedback TTL decreases across relays and is checked again by the
+  CPU worker after mailbox waiting; gradient hops are separate from routing
+  hops. Routes are neither globally consistent nor transactional.
 
 ## Run a local three-node cluster
 
