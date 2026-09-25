@@ -104,3 +104,36 @@ async fn malformed_layout_and_unknown_neuron_fail_before_side_effect() {
     ));
     assert_eq!(shard.inspect(1).await.unwrap().version, 0);
 }
+
+#[tokio::test]
+async fn elapsed_transport_deadline_is_checked_by_cpu_worker_before_learning() {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let shard = Shard::new(vec![neuron(1, 99, 2.0)], 1, 4).unwrap();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    shard.forward(1, Forward {
+        event_id: 10,
+        trace_id: 77,
+        now_ms,
+        inputs: vec![SynapticInput { from: 99, source_event_id: 1, value: 1.0 }],
+        expected: vec![FeedbackSource::Teacher],
+    }).await.unwrap();
+    let packet = Feedback {
+        event_id: 10, from: FeedbackSource::Teacher, gradient: 1.0,
+        expires_at_ms: now_ms + 5_000, hops_left: 2,
+    };
+    let expired = Instant::now().checked_sub(Duration::from_millis(1)).unwrap();
+    assert_eq!(
+        shard.backward_live(1, packet.clone(), expired).await.unwrap(),
+        FeedbackStatus::Expired
+    );
+    assert_eq!(shard.inspect(1).await.unwrap().version, 0);
+
+    let valid = Instant::now() + Duration::from_secs(2);
+    assert!(matches!(
+        shard.backward_live(1, packet, valid).await.unwrap(),
+        FeedbackStatus::Applied { .. }
+    ));
+    assert_eq!(shard.inspect(1).await.unwrap().version, 1);
+}
