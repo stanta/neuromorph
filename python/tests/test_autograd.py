@@ -147,6 +147,37 @@ class PyTorchIntegrationTests(unittest.TestCase):
         for neuron in (11, 21, 31):
             self.assertEqual(self.inspect(neuron)["version"], 1)
 
+    def test_remote_sgd_weights_and_bias_match_one_torch_cpu_step(self) -> None:
+        inputs = torch.tensor([1.0, 2.0], dtype=torch.float32)
+        expected_weights = torch.tensor(
+            [[2.0, 3.0], [-1.0, 4.0], [0.5, -2.0]], requires_grad=True
+        )
+        expected_bias = torch.zeros(3, requires_grad=True)
+        F.linear(inputs, expected_weights, expected_bias).sum().backward()
+        with torch.no_grad():
+            expected_weights -= 0.1 * expected_weights.grad
+            expected_bias -= 0.1 * expected_bias.grad
+
+        self.model(inputs).sum().backward()
+        for index, neuron_id in enumerate((11, 21, 31)):
+            info = self.inspect(neuron_id)
+            self.assertEqual(info["version"], 1)
+            torch.testing.assert_close(
+                torch.tensor([info["weights"]["901"], info["weights"]["902"]]),
+                expected_weights[index].detach(),
+                atol=1e-6,
+                rtol=0,
+            )
+            self.assertAlmostEqual(
+                float(info["bias"]), float(expected_bias[index].detach()), places=6
+            )
+
+        self.model.eval()
+        with torch.no_grad():
+            predicted = self.model(inputs)
+        reference = F.linear(inputs, expected_weights.detach(), expected_bias.detach())
+        torch.testing.assert_close(predicted, reference, atol=1e-6, rtol=0)
+
     def test_nine_samples_fit_current_remote_staleness_limit(self) -> None:
         model = DANMALinear(
             self.client,
