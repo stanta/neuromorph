@@ -223,6 +223,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "danma-shard"
+version = "0.1.0"
+dependencies = [
+ "danma-core",
+ "tokio",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
