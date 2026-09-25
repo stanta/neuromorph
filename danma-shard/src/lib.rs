@@ -10,7 +10,11 @@ use danma_core::{
     ActivationTrace, Error as CoreError, Feedback, FeedbackStatus, Forward, Neuron,
     NeuronId, EventId,
 };
-use std::{collections::BTreeMap, thread};
+use std::{
+    collections::BTreeMap,
+    thread,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_CPU_WORKERS: usize = 64;
@@ -35,6 +39,22 @@ pub struct NeuronInfo {
     pub weights: BTreeMap<NeuronId, f32>,
 }
 
+enum BackwardClock {
+    /// Deterministic clock supplied by reference-model tests.
+    Fixed(u64),
+    /// The worker checks the monotonic deadline immediately before mutation.
+    LiveUntil(Instant),
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 enum Command {
     Forward {
         target: NeuronId,
@@ -44,7 +64,7 @@ enum Command {
     Backward {
         target: NeuronId,
         input: Feedback,
-        now_ms: u64,
+        clock: BackwardClock,
         answer: oneshot::Sender<Result<FeedbackStatus, ShardError>>,
     },
     Inspect {
@@ -67,7 +87,17 @@ fn process(command: Command, neurons: &mut BTreeMap<NeuronId, Neuron>) {
                 .and_then(|neuron| neuron.forward(input).map_err(ShardError::Core));
             let _ = answer.send(response);
         }
-        Command::Backward { target, input, now_ms, answer } => {
+        Command::Backward { target, input, clock, answer } => {
+            let now_ms = match clock {
+                BackwardClock::Fixed(now_ms) => now_ms,
+                BackwardClock::LiveUntil(deadline) => {
+                    if Instant::now() >= deadline {
+                        let _ = answer.send(Ok(FeedbackStatus::Expired));
+                        return;
+                    }
+                    epoch_millis()
+                }
+            };
             let response = neurons
                 .get_mut(&target)
                 .ok_or(ShardError::UnknownNeuron(target))
@@ -201,7 +231,33 @@ impl Shard {
         let (sender, receiver) = oneshot::channel();
         self.execute(
             target,
-            Command::Backward { target, input, now_ms, answer: sender },
+            Command::Backward {
+                target,
+                input,
+                clock: BackwardClock::Fixed(now_ms),
+                answer: sender,
+            },
+            receiver,
+        ).await
+    }
+
+    /// Network-facing entrypoint. A queued message that outlives the
+    /// monotonic transport deadline is rejected before any weight mutation.
+    pub async fn backward_live(
+        &self,
+        target: NeuronId,
+        input: Feedback,
+        deadline: Instant,
+    ) -> Result<FeedbackStatus, ShardError> {
+        let (sender, receiver) = oneshot::channel();
+        self.execute(
+            target,
+            Command::Backward {
+                target,
+                input,
+                clock: BackwardClock::LiveUntil(deadline),
+                answer: sender,
+            },
             receiver,
         ).await
     }
