@@ -217,6 +217,7 @@ name = "danma-net"
 version = "0.1.0"
 dependencies = [
  "danma-core",
+ "danma-shard",
  "serde",
  "serde_json",
  "tokio",
