@@ -6,13 +6,14 @@
 use danma_core::{
     Feedback, FeedbackSource, FeedbackStatus, Forward, Neuron, SynapticInput,
 };
+use danma_shard::Shard;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     io,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -175,7 +176,9 @@ pub struct Peer {
 pub struct NodeConfig {
     pub id: u64,
     pub address: SocketAddr,
-    pub neuron: Neuron,
+    pub neurons: Vec<Neuron>,
+    pub worker_threads: usize,
+    pub mailbox_capacity: usize,
     /// Explicitly permitted bootstrap peers. Only loopback is accepted by v1.
     pub peers: Vec<Peer>,
 }
@@ -188,8 +191,7 @@ struct Route {
 
 struct NodeState {
     id: u64,
-    neuron_id: u64,
-    neuron: Mutex<Neuron>,
+    shard: Shard,
     peers: BTreeMap<u64, SocketAddr>,
     routes: RwLock<BTreeMap<u64, Route>>,
 }
@@ -237,7 +239,7 @@ impl NodeState {
                         || adv.neuron == 0
                         || adv.epoch == 0
                         || !(self.peers.contains_key(&adv.owner)
-                            || (adv.owner == self.id && adv.neuron == self.neuron_id))
+                            || (adv.owner == self.id && self.shard.contains(adv.neuron)))
                     {
                         return error_response("invalid_route_owner");
                     }
@@ -264,7 +266,7 @@ impl NodeState {
                 json!({"kind":"gossip_accepted"})
             }
             Message::Inspect { target, route_hops } => {
-                if target != self.neuron_id {
+                if !self.shard.contains(target) {
                     let address = match self.route_or_error(target, route_hops).await {
                         Ok(address) => address,
                         Err(response) => return response,
@@ -279,21 +281,23 @@ impl NodeState {
                         )
                         .await;
                 }
-                let n = self.neuron.lock().expect("neuron mutex poisoned");
-                json!({
-                    "kind":"inspect_result",
-                    "target":target,
-                    "version":n.version(),
-                    "bias":n.bias(),
-                    "weights":n.weights()
-                })
+                match self.shard.inspect(target).await {
+                    Ok(neuron) => json!({
+                        "kind":"inspect_result",
+                        "target":target,
+                        "version":neuron.version,
+                        "bias":neuron.bias,
+                        "weights":neuron.weights
+                    }),
+                    Err(err) => error_response(&format!("inspect_{err:?}")),
+                }
             }
             Message::Trace {
                 target,
                 event_id,
                 route_hops,
             } => {
-                if target != self.neuron_id {
+                if !self.shard.contains(target) {
                     let address = match self.route_or_error(target, route_hops).await {
                         Ok(address) => address,
                         Err(response) => return response,
@@ -309,8 +313,11 @@ impl NodeState {
                         )
                         .await;
                 }
-                let neuron = self.neuron.lock().expect("neuron mutex poisoned");
-                let trace = neuron.trace(u128::from(event_id)).map(|trace| {
+                let trace = match self.shard.trace(target, u128::from(event_id)).await {
+                    Ok(trace) => trace,
+                    Err(err) => return error_response(&format!("trace_{err:?}")),
+                };
+                let trace = trace.map(|trace| {
                     json!({
                         "trace_id":trace.trace_id,
                         "output":trace.output,
@@ -333,7 +340,7 @@ impl NodeState {
                 if inputs.len() > MAX_INCOMING_INPUTS || expected.len() > MAX_EXPECTED_BRANCHES {
                     return error_response("activation_too_large");
                 }
-                if target != self.neuron_id {
+                if !self.shard.contains(target) {
                     let address = match self.route_or_error(target, route_hops).await {
                         Ok(address) => address,
                         Err(response) => return response,
@@ -366,8 +373,7 @@ impl NodeState {
                         .collect(),
                     expected: expected.into_iter().map(FeedbackSource::from).collect(),
                 };
-                let mut n = self.neuron.lock().expect("neuron mutex poisoned");
-                match n.forward(forward) {
+                match self.shard.forward(target, forward).await {
                     Ok(output) => json!({"kind":"forward_result","output":output}),
                     Err(err) => error_response(&format!("forward_{err:?}")),
                 }
@@ -388,7 +394,7 @@ impl NodeState {
                     Some(deadline) => deadline,
                     None => return error_response("invalid_ttl"),
                 };
-                if target != self.neuron_id {
+                if !self.shard.contains(target) {
                     let address = match self.route_or_error(target, route_hops).await {
                         Ok(address) => address,
                         Err(response) => return response,
@@ -420,10 +426,7 @@ impl NodeState {
                     expires_at_ms: now.saturating_add(ttl_ms),
                     hops_left: gradient_hops,
                 };
-                let result = {
-                    let mut n = self.neuron.lock().expect("neuron mutex poisoned");
-                    n.backward(packet, now)
-                };
+                let result = self.shard.backward(target, packet, now).await;
                 match result {
                     Err(err) => error_response(&format!("backward_{err:?}")),
                     Ok(FeedbackStatus::Pending { remaining }) => {
@@ -450,16 +453,21 @@ impl NodeState {
                                 unrouted.push(json!({"target":dest,"reason":"expired"}));
                                 continue;
                             }
-                            let address = match self.target_address(dest).await {
-                                Some(address) => address,
-                                None => {
-                                    unrouted.push(json!({
-                                        "target":dest,
-                                        "reason":"no_route",
-                                        "event_id":core_packet.event_id.to_string(),
-                                        "gradient":core_packet.gradient
-                                    }));
-                                    continue;
+                            let local_target = self.shard.contains(dest);
+                            let address = if local_target {
+                                None
+                            } else {
+                                match self.target_address(dest).await {
+                                    Some(address) => Some(address),
+                                    None => {
+                                        unrouted.push(json!({
+                                            "target":dest,
+                                            "reason":"no_route",
+                                            "event_id":core_packet.event_id.to_string(),
+                                            "gradient":core_packet.gradient
+                                        }));
+                                        continue;
+                                    }
                                 }
                             };
                             let next_source = match Source::try_from(core_packet.from) {
@@ -476,20 +484,22 @@ impl NodeState {
                                     continue;
                                 }
                             };
-                            let reply = self
-                                .relay(
-                                    address,
-                                    &Message::Backward {
-                                        target: dest,
-                                        event_id: parent_event,
-                                        from: next_source,
-                                        gradient: core_packet.gradient,
-                                        ttl_ms: remaining,
-                                        gradient_hops: core_packet.hops_left,
-                                        route_hops: 4,
-                                    },
-                                )
-                                .await;
+                            let next = Message::Backward {
+                                target: dest,
+                                event_id: parent_event,
+                                from: next_source,
+                                gradient: core_packet.gradient,
+                                ttl_ms: remaining,
+                                gradient_hops: core_packet.hops_left,
+                                route_hops: 4,
+                            };
+                            let reply = if local_target {
+                                // No second TCP request for two neurons sharing a node.
+                                // Box the recursive async call to bound the future size.
+                                Box::pin(self.process(next)).await
+                            } else {
+                                self.relay(address.expect("remote route was checked"), &next).await
+                            };
                             if reply["kind"] == "backward_result"
                                 && (reply["status"] == "applied" || reply["status"] == "ignored_duplicate"
                                     || reply["status"] == "pending")
@@ -582,11 +592,12 @@ async fn gossip_loop(state: Arc<NodeState>) {
     }
 }
 
-/// Run one neuron owner, listening on a dedicated TCP address. Multiple
+/// Run one multi-neuron CPU shard behind one TCP listener. Multiple
 /// processes form a trusted development cluster through bounded gossip.
 pub async fn serve(config: NodeConfig) -> io::Result<()> {
     if config.id == 0
-        || config.neuron.id() == 0
+        || config.neurons.is_empty()
+        || config.neurons.len() > MAX_ADVERTISED_ROUTES
         || !is_loopback(config.address.ip())
         || config.peers.len() > MAX_ADVERTISED_ROUTES
     {
@@ -602,18 +613,25 @@ pub async fn serve(config: NodeConfig) -> io::Result<()> {
             return Err(invalid("invalid or duplicate bootstrap peer"));
         }
     }
+    let shard = Shard::new(
+        config.neurons,
+        config.worker_threads,
+        config.mailbox_capacity,
+    )
+    .map_err(|_| invalid("invalid CPU shard configuration"))?;
     let mut routes = BTreeMap::new();
-    routes.insert(
-        config.neuron.id(),
-        Route {
-            owner: config.id,
-            epoch: 1,
-        },
-    );
+    for neuron_id in shard.neuron_ids() {
+        routes.insert(
+            neuron_id,
+            Route {
+                owner: config.id,
+                epoch: 1,
+            },
+        );
+    }
     let state = Arc::new(NodeState {
         id: config.id,
-        neuron_id: config.neuron.id(),
-        neuron: Mutex::new(config.neuron),
+        shard,
         peers,
         routes: RwLock::new(routes),
     });
