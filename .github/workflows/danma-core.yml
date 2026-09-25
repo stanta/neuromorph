@@ -2,7 +2,7 @@ name: DANMA CPU and TCP MVP
 
 on:
   push:
-    branches: [feat/danma-cpu-runtime-mvp]
+    branches: [main, feat/danma-tcp-gossip-3node]
     paths: [danma-core/**, danma-net/**, Cargo.toml, Cargo.lock, .github/workflows/danma-core.yml]
   pull_request:
     paths: [danma-core/**, Cargo.toml, .github/workflows/danma-core.yml]
