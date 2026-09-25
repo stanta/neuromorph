@@ -1,0 +1,8 @@
+[package]
+name = "danma-core"
+version = "0.1.0"
+edition = "2021"
+description = "CPU-first event-driven DANMA neuron runtime"
+license = "MIT"
+
+[dependencies]
