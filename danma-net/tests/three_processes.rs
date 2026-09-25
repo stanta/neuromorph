@@ -50,14 +50,18 @@ async fn cluster() -> (Children, [SocketAddr; 3]) {
     ]);
     timeout(Duration::from_secs(12), async {
         loop {
-            if let Ok(response) = request(addresses[0], &json!({"kind":"routes"})).await {
-                if response["kind"] == "routes_result"
-                    && response["routes"]["1"] == 1
-                    && response["routes"]["2"] == 2
-                    && response["routes"]["3"] == 3
-                {
-                    break;
+            let mut converged = true;
+            for address in addresses {
+                match request(address, &json!({"kind":"routes"})).await {
+                    Ok(response) if response["kind"] == "routes_result"
+                        && response["routes"]["1"] == 1
+                        && response["routes"]["2"] == 2
+                        && response["routes"]["3"] == 3 => {}
+                    _ => converged = false,
                 }
+            }
+            if converged {
+                break;
             }
             sleep(Duration::from_millis(50)).await;
         }
