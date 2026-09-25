@@ -1,0 +1,40 @@
+name: DANMA PyTorch autograd adapter
+
+on:
+  push:
+    branches: [feat/danma-pytorch-autograd-adapter]
+    paths:
+      - "python/**"
+      - "danma-*/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/danma-pytorch.yml"
+  pull_request:
+    paths:
+      - "python/**"
+      - "danma-*/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/danma-pytorch.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pytorch-rust-cluster:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU-only PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+      - name: Build real DANMA TCP nodes
+        run: cargo build --locked -p danma-net --bin danma-node
+      - name: Run PyTorch autograd integration tests
+        env:
+          PYTHONPATH: python
+          DANMA_NODE_BIN: target/debug/danma-node
+        run: python -m unittest discover -s python/tests -v
