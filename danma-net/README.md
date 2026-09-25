@@ -60,9 +60,17 @@ To inspect gossip convergence from another shell:
         print(json.loads(data))
     PY
 
+A routed inspect request returns a neuron's current version, bias and
+weights. During an active training activation, a routed trace request such as
+{"kind":"trace","target":2,"event_id":50,"route_hops":4} returns the
+TraceID, output, weight version, expiry and number of received/expected
+feedback contributions. Completed traces are removed from active memory;
+there is no durable per-activation history yet.
+
 The integration test starts three **separate child processes** and runs A→B→C
 forward, C→B→A backward, retry/dedup, TTL expiry, unexpected contributor,
-unknown destination, gossip convergence and malformed frame scenarios:
+unknown destination, gossip convergence, active-trace inspection and
+malformed frame scenarios:
 
     cargo test --locked -p danma-core -p danma-net --all-targets
 
