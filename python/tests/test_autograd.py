@@ -147,6 +147,33 @@ class PyTorchIntegrationTests(unittest.TestCase):
         for neuron in (11, 21, 31):
             self.assertEqual(self.inspect(neuron)["version"], 1)
 
+    def test_nine_samples_fit_current_remote_staleness_limit(self) -> None:
+        model = DANMALinear(
+            self.client,
+            neuron_ids=(11, 21, 31),
+            input_ids=(901, 902),
+            max_batch=9,
+        )
+        inputs = torch.ones((9, 2), dtype=torch.float32, requires_grad=True)
+        output = model(inputs)
+        output.sum().backward()
+        torch.testing.assert_close(
+            inputs.grad,
+            torch.tensor([[1.5, 5.0]]).expand(9, 2),
+            atol=1e-6,
+            rtol=0,
+        )
+        for neuron in (11, 21, 31):
+            self.assertEqual(self.inspect(neuron)["version"], 9)
+
+    def test_non_finite_gradient_is_rejected_without_remote_side_effects(self) -> None:
+        inputs = torch.tensor([1.0, 2.0], requires_grad=True)
+        output = self.model(inputs)
+        with self.assertRaisesRegex(DANMAError, "non-finite"):
+            output.backward(torch.tensor([1.0, float("nan"), 1.0]))
+        for neuron in (11, 21, 31):
+            self.assertEqual(self.inspect(neuron)["version"], 0)
+
     def test_eval_no_grad_does_not_create_training_events_or_change_weights(self) -> None:
         self.model.eval()
         with torch.no_grad():
@@ -187,7 +214,7 @@ class InputContractTests(unittest.TestCase):
         with self.assertRaisesRegex((ValueError, TypeError), "feature"):
             self.model(torch.ones((3,), dtype=torch.float32))
 
-    def test_rejects_reused_ids_and_unsupported_gpu_tensors(self) -> None:
+    def test_rejects_reused_and_overlapping_ids(self) -> None:
         with self.assertRaisesRegex(ValueError, "unique"):
             DANMALinear(self.client, neuron_ids=(11, 11), input_ids=(901, 902))
         with self.assertRaisesRegex(ValueError, "unique"):
