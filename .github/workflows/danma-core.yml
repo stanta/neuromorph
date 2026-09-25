@@ -1,0 +1,19 @@
+name: DANMA CPU core
+
+on:
+  push:
+    branches: [feat/danma-cpu-runtime-mvp]
+    paths: [danma-core/**, Cargo.toml, .github/workflows/danma-core.yml]
+  pull_request:
+    paths: [danma-core/**, Cargo.toml, .github/workflows/danma-core.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test standalone CPU core
+        run: cargo test -p danma-core --all-targets
