@@ -23,6 +23,9 @@ CUDA stream.
   snapshots, feedback TTL and version checks remain owned by each neuron.
 - The shard API can return per-neuron state and active activation traces to
   the routed network observer.
+- The network-facing backward_live call enforces a monotonic deadline at the
+  CPU worker just before applying a gradient. Waiting in the mailbox does not
+  extend a feedback packet's TTL.
 
 ## Run
 
