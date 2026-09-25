@@ -228,7 +228,8 @@ impl NodeState {
                     if adv.owner == 0
                         || adv.neuron == 0
                         || adv.epoch == 0
-                        || !self.peers.contains_key(&adv.owner)
+                        || !(self.peers.contains_key(&adv.owner)
+                            || (adv.owner == self.id && adv.neuron == self.neuron_id))
                     {
                         return error_response("invalid_route_owner");
                     }
