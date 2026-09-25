@@ -142,6 +142,11 @@ enum Message {
         target: u64,
         route_hops: u8,
     },
+    Trace {
+        target: u64,
+        event_id: u64,
+        route_hops: u8,
+    },
     Forward {
         target: u64,
         event_id: u64,
@@ -282,6 +287,40 @@ impl NodeState {
                     "bias":n.bias(),
                     "weights":n.weights()
                 })
+            }
+            Message::Trace {
+                target,
+                event_id,
+                route_hops,
+            } => {
+                if target != self.neuron_id {
+                    let address = match self.route_or_error(target, route_hops).await {
+                        Ok(address) => address,
+                        Err(response) => return response,
+                    };
+                    return self
+                        .relay(
+                            address,
+                            &Message::Trace {
+                                target,
+                                event_id,
+                                route_hops: route_hops - 1,
+                            },
+                        )
+                        .await;
+                }
+                let neuron = self.neuron.lock().expect("neuron mutex poisoned");
+                let trace = neuron.trace(u128::from(event_id)).map(|trace| {
+                    json!({
+                        "trace_id":trace.trace_id,
+                        "output":trace.output,
+                        "parameter_version":trace.parameter_version,
+                        "expires_at_ms":trace.expires_at_ms,
+                        "expected_contributions":trace.expected_contributions,
+                        "received_contributions":trace.received_contributions
+                    })
+                });
+                json!({"kind":"trace_result","target":target,"event_id":event_id,"trace":trace})
             }
             Message::Forward {
                 target,
