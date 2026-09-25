@@ -11,11 +11,18 @@ fn free_port() -> u16 {
     socket.local_addr().expect("local address").port()
 }
 
-struct Children(Vec<Child>);
+// Test cases run in parallel by Cargo. Do not reuse released ephemeral
+// ports while another three-process fixture is still starting.
+static CLUSTER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct Children {
+    processes: Vec<Child>,
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
 
 impl Drop for Children {
     fn drop(&mut self) {
-        for child in &mut self.0 {
+        for child in &mut self.processes {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -38,16 +45,24 @@ async fn call(addr: SocketAddr, req: Value) -> Value {
 }
 
 async fn cluster() -> (Children, [SocketAddr; 3]) {
+    let guard = CLUSTER_LOCK.lock().await;
+    let mut ports = Vec::new();
+    while ports.len() < 3 {
+        let port = free_port();
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
     let addresses = [
-        format!("127.0.0.1:{}", free_port()).parse().unwrap(),
-        format!("127.0.0.1:{}", free_port()).parse().unwrap(),
-        format!("127.0.0.1:{}", free_port()).parse().unwrap(),
+        format!("127.0.0.1:{}", ports[0]).parse().unwrap(),
+        format!("127.0.0.1:{}", ports[1]).parse().unwrap(),
+        format!("127.0.0.1:{}", ports[2]).parse().unwrap(),
     ];
-    let children = Children(vec![
+    let children = Children { processes: vec![
         child(1, addresses[0], 1, "99:2", &[(2, addresses[1]), (3, addresses[2])]),
         child(2, addresses[1], 2, "1:3", &[(1, addresses[0]), (3, addresses[2])]),
         child(3, addresses[2], 3, "2:4", &[(1, addresses[0]), (2, addresses[1])]),
-    ]);
+    ], _guard: guard };
     timeout(Duration::from_secs(12), async {
         loop {
             let mut converged = true;
