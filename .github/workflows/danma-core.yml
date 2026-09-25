@@ -1,4 +1,4 @@
-name: DANMA CPU core
+name: DANMA CPU and TCP MVP
 
 on:
   push:
@@ -16,6 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test standalone CPU core
-        run: cargo test -p danma-core --all-targets
+        run: cargo test --locked -p danma-core --all-targets
       - name: Test three-process TCP network
-        run: cargo test -p danma-net --all-targets
+        run: cargo test --locked -p danma-net --all-targets
