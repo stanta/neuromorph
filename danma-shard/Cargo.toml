@@ -1,0 +1,10 @@
+[package]
+name = "danma-shard"
+version = "0.1.0"
+edition = "2021"
+description = "Bounded multi-neuron CPU worker shards for DANMA"
+license = "MIT"
+
+[dependencies]
+danma-core = { path = "../danma-core" }
+tokio = { version = "1", features = ["sync", "macros", "rt"] }

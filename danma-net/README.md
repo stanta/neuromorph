@@ -7,9 +7,10 @@ CUDA and GPU support are out of scope.
 
 ## Architecture
 
-- Each OS process owns one neuron. The process exposes **one** TCP listener,
-  not one listener per neuron. A later shard runtime will own many compact
-  neurons and a fixed CPU worker pool.
+- Each OS process owns a **multi-neuron CPU shard**, served by one TCP
+  listener and a fixed, bounded number of CPU workers. NeuronId selects a
+  local worker mailbox; a neuron has no individual process, thread or socket.
+  Different neurons on the same process propagate feedback locally.
 - A small, static allowlist supplies the identities and addresses of bootstrap
   peers. Round-robin gossip (one peer per 100 ms) exchanges bounded neuron
   owner/epoch advertisements. Forward activations and backward feedback are
@@ -24,8 +25,9 @@ CUDA and GPU support are out of scope.
 - An activation specifies expected downstream contributions before dispatch.
   A neuron aggregates distinct contributions and applies one weight update;
   repeated delivery of an already-seen contribution does not update twice.
-  Relative feedback TTL decreases across relays; gradient hops are separate
-  from routing hops. Routes are neither globally consistent nor transactional.
+  Relative feedback TTL decreases across relays and is checked again by the
+  CPU worker after mailbox waiting; gradient hops are separate from routing
+  hops. Routes are neither globally consistent nor transactional.
 
 ## Run a local three-node cluster
 
@@ -42,6 +44,15 @@ From the repo root, in three terminals:
     cargo run -p danma-net --bin danma-node -- \
       --id 3 --listen 127.0.0.1:9103 --neuron 3 --weight 2:4 \
       --peer 1@127.0.0.1:9101 --peer 2@127.0.0.1:9102
+
+The --neuron/--weight pair can be repeated for multiple neurons within one
+process. For example, Node 1 can also host neuron 4 with a local input from
+neuron 1:
+
+    cargo run -p danma-net --bin danma-node -- \
+      --id 1 --listen 127.0.0.1:9101 --workers 2 --mailbox 16 \
+      --neuron 1 --weight 99:2 --neuron 4 --weight 1:1 \
+      --peer 2@127.0.0.1:9102 --peer 3@127.0.0.1:9103
 
 To inspect gossip convergence from another shell:
 
@@ -67,12 +78,13 @@ TraceID, output, weight version, expiry and number of received/expected
 feedback contributions. Completed traces are removed from active memory;
 there is no durable per-activation history yet.
 
-The integration test starts three **separate child processes** and runs A→B→C
-forward, C→B→A backward, retry/dedup, TTL expiry, unexpected contributor,
-unknown destination, gossip convergence, active-trace inspection and
-malformed frame scenarios:
+The integration tests launch three **separate child processes**, including
+a six-neuron layout with two neurons and two CPU workers per process. They
+exercise A→B→C forward, C→B→A backward, local and remote gradient hops,
+retry/dedup, TTL expiry, invalid contributor, gossip convergence, remote
+traces and malformed frames:
 
-    cargo test --locked -p danma-core -p danma-net --all-targets
+    cargo test --locked -p danma-core -p danma-shard -p danma-net --all-targets
 
 ## Known gaps and non-goals
 

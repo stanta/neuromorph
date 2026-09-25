@@ -41,9 +41,11 @@ or establish a gossip overlay.
 
 ## Explicitly not implemented yet
 
-1. Shared, bounded CPU-worker pool and CSR/SoA synapse storage for large shards.
-2. Real cross-process transport, signed membership, gossip discovery, route
-   caching, batch delivery, backpressure and node failure/recovery.
+1. CSR/SoA synapse storage and vectorized kernels for large shards. A bounded
+   multi-neuron worker pool is now implemented in danma-shard.
+2. Signed membership, DHT/discovery outside a static peer mesh, batch delivery
+   and crash-safe node recovery. A loopback TCP/Gossip prototype is now
+   implemented in danma-net.
 3. Durable atomic weight-update + dedup journaling and checkpoint/replay.
    The current once-per-EventID effect is in-memory, for one owning actor.
 4. PyTorch PrivateUse1 and TensorFlow PluggableDevice adapters; this crate is
