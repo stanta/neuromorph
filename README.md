@@ -280,3 +280,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Built with ❤️ for the neuromorphic computing community**
+
+## Ray-managed DANMA CPU shards (experimental)
+
+The local Ray control-plane adapter is documented in [ray/README.md](ray/README.md).
+It starts the existing Rust shards as Ray-managed processes on **one host**;
+DANMA forward/backward traffic still uses direct loopback TCP. The current
+protocol is not authenticated for cross-host deployment, and Ray does not
+provide a PyTorch device backend or crash-safe neuron checkpointing.

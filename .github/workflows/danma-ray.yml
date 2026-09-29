@@ -1,0 +1,45 @@
+name: DANMA Ray local control plane
+
+on:
+  push:
+    branches: [main, feat/danma-ray-control-plane]
+    paths:
+      - 'ray/**'
+      - 'danma-core/**'
+      - 'danma-shard/**'
+      - 'danma-net/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/danma-ray.yml'
+  pull_request:
+    paths:
+      - 'ray/**'
+      - 'danma-core/**'
+      - 'danma-shard/**'
+      - 'danma-net/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/danma-ray.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ray-local-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build DANMA Rust node
+        run: cargo build --locked -p danma-net --bin danma-node
+      - name: Install Ray adapter
+        run: python -m pip install -e ./ray
+      - name: Unit and three-actor Rust integration tests
+        env:
+          PYTHONPATH: ray
+          DANMA_RAY_E2E: '1'
+          DANMA_NODE_BIN: target/debug/danma-node
+        run: python -m unittest discover -s ray/tests -v
