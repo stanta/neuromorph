@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "danma-ray"
+version = "0.1.0"
+description = "Ray control-plane adapter for DANMA CPU shard processes"
+requires-python = ">=3.10"
+dependencies = ["ray>=2.40,<3"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["danma_ray*"]
