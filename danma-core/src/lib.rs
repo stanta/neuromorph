@@ -11,15 +11,37 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type NeuronId = u64;
+pub type EdgeId = u64;
 pub type EventId = u128;
 pub type TraceId = u128;
+
+/// Deterministic v1 activation identity for autonomous forward propagation.
+///
+/// The wire protocol currently carries u64 EventIDs, so the mixed result is
+/// deliberately kept in that range. One neuron fires at most once per TraceID;
+/// recurrent time-step semantics require a future explicit StepID.
+pub fn derived_event_id(trace_id: TraceId, neuron_id: NeuronId) -> EventId {
+    let folded = (trace_id as u64) ^ ((trace_id >> 64) as u64);
+    let mut value = folded
+        ^ neuron_id.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ 0xD1B5_4A32_D192_ED03;
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    EventId::from(if value == 0 { 1 } else { value })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     InvalidConfiguration,
     DuplicateWeight,
+    DuplicateAxon,
+    DuplicateAxonTarget,
     UnknownInput,
     DuplicateInput,
+    ConflictingInput,
     DuplicateExpected,
     DuplicateEvent,
     CapacityExceeded,
@@ -75,6 +97,32 @@ pub struct SynapticInput {
     pub from: NeuronId,
     pub source_event_id: EventId,
     pub value: f32,
+}
+
+/// A logical outgoing synapse. Physical node addresses remain in the runtime
+/// route table so neuron migration never requires rewriting axons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Axon {
+    pub edge_id: EdgeId,
+    pub to: NeuronId,
+}
+
+/// One independently delivered forward contribution to a downstream neuron.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ForwardSignal {
+    pub event_id: EventId,
+    pub trace_id: TraceId,
+    pub now_ms: u64,
+    pub input: SynapticInput,
+    pub training: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignalStatus {
+    Pending { remaining: usize },
+    Fired { output: f32 },
+    IgnoredDuplicate,
+    Expired,
 }
 
 /// The expected branch identities must be known when a forward activation
@@ -154,6 +202,14 @@ struct FeedbackPart {
 }
 
 #[derive(Debug)]
+struct ForwardCollection {
+    trace_id: TraceId,
+    expires_at_ms: u64,
+    training: bool,
+    inputs: BTreeMap<NeuronId, SynapticInput>,
+}
+
+#[derive(Debug)]
 struct ActivationRecord {
     trace_id: TraceId,
     preactivation: f32,
@@ -186,8 +242,10 @@ pub struct Neuron {
     id: NeuronId,
     bias: f32,
     weights: BTreeMap<NeuronId, f32>,
+    axons: Vec<Axon>,
     version: u64,
     config: Config,
+    collecting: BTreeMap<EventId, ForwardCollection>,
     pending: BTreeMap<EventId, ActivationRecord>,
     closed: BTreeMap<EventId, ClosedEvent>,
 }
@@ -197,6 +255,16 @@ impl Neuron {
         id: NeuronId,
         bias: f32,
         weights: impl IntoIterator<Item = (NeuronId, f32)>,
+        config: Config,
+    ) -> Result<Self, Error> {
+        Self::new_with_axons(id, bias, weights, std::iter::empty(), config)
+    }
+
+    pub fn new_with_axons(
+        id: NeuronId,
+        bias: f32,
+        weights: impl IntoIterator<Item = (NeuronId, f32)>,
+        axons: impl IntoIterator<Item = Axon>,
         config: Config,
     ) -> Result<Self, Error> {
         if id == 0
@@ -220,12 +288,31 @@ impl Neuron {
             }
         }
 
+        let mut stored_axons = Vec::new();
+        let mut edge_ids = BTreeSet::new();
+        let mut targets = BTreeSet::new();
+        for axon in axons {
+            if axon.edge_id == 0 || axon.to == 0 {
+                return Err(Error::InvalidConfiguration);
+            }
+            if !edge_ids.insert(axon.edge_id) {
+                return Err(Error::DuplicateAxon);
+            }
+            if !targets.insert(axon.to) {
+                return Err(Error::DuplicateAxonTarget);
+            }
+            stored_axons.push(axon);
+        }
+        stored_axons.sort_unstable();
+
         Ok(Self {
             id,
             bias,
             weights: stored_weights,
+            axons: stored_axons,
             version: 0,
             config,
+            collecting: BTreeMap::new(),
             pending: BTreeMap::new(),
             closed: BTreeMap::new(),
         })
@@ -251,6 +338,10 @@ impl Neuron {
         &self.weights
     }
 
+    pub fn axons(&self) -> &[Axon] {
+        &self.axons
+    }
+
     pub fn trace(&self, event_id: EventId) -> Option<ActivationTrace> {
         self.pending.get(&event_id).map(|record| ActivationTrace {
             trace_id: record.trace_id,
@@ -267,12 +358,15 @@ impl Neuron {
         if request.event_id == 0 {
             return Err(Error::InvalidConfiguration);
         }
-        if self.pending.contains_key(&request.event_id)
+        if self.collecting.contains_key(&request.event_id)
+            || self.pending.contains_key(&request.event_id)
             || self.closed.contains_key(&request.event_id)
         {
             return Err(Error::DuplicateEvent);
         }
-        if self.pending.len() + self.closed.len() >= self.config.max_live_events {
+        if self.collecting.len() + self.pending.len() + self.closed.len()
+            >= self.config.max_live_events
+        {
             return Err(Error::CapacityExceeded);
         }
 
@@ -336,10 +430,129 @@ impl Neuron {
         Ok(output)
     }
 
-    /// Expire active traces and prune completed-event tombstones.
+    /// Accept one forward contribution. Fan-in uses a barrier over the
+    /// configured dendrite sources; duplicate transport delivery is harmless.
+    pub fn receive_signal(
+        &mut self,
+        signal: ForwardSignal,
+    ) -> Result<SignalStatus, Error> {
+        self.expire(signal.now_ms);
+        if signal.event_id == 0 || !signal.input.value.is_finite() {
+            return Err(if signal.event_id == 0 {
+                Error::InvalidConfiguration
+            } else {
+                Error::NonFinite
+            });
+        }
+        if !self.weights.contains_key(&signal.input.from) {
+            return Err(Error::UnknownInput);
+        }
+        if let Some(closed) = self.closed.get(&signal.event_id) {
+            return Ok(match closed.kind {
+                ClosedKind::Expired => SignalStatus::Expired,
+                ClosedKind::Completed | ClosedKind::Inference | ClosedKind::Stale => {
+                    SignalStatus::IgnoredDuplicate
+                }
+            });
+        }
+        if self.pending.contains_key(&signal.event_id) {
+            return Ok(SignalStatus::IgnoredDuplicate);
+        }
+
+        if let Some(collection) = self.collecting.get(&signal.event_id) {
+            if collection.trace_id != signal.trace_id || collection.training != signal.training {
+                return Err(Error::DuplicateEvent);
+            }
+            if let Some(previous) = collection.inputs.get(&signal.input.from) {
+                return if *previous == signal.input {
+                    Ok(SignalStatus::IgnoredDuplicate)
+                } else {
+                    Err(Error::ConflictingInput)
+                };
+            }
+        } else {
+            if self.collecting.len() + self.pending.len() + self.closed.len()
+                >= self.config.max_live_events
+            {
+                return Err(Error::CapacityExceeded);
+            }
+            let expires_at_ms = signal
+                .now_ms
+                .checked_add(self.config.activation_ttl_ms)
+                .ok_or(Error::InvalidConfiguration)?;
+            self.collecting.insert(
+                signal.event_id,
+                ForwardCollection {
+                    trace_id: signal.trace_id,
+                    expires_at_ms,
+                    training: signal.training,
+                    inputs: BTreeMap::new(),
+                },
+            );
+        }
+
+        let collection = self
+            .collecting
+            .get_mut(&signal.event_id)
+            .ok_or(Error::UnknownEvent)?;
+        collection.inputs.insert(signal.input.from, signal.input);
+        if collection.inputs.len() < self.weights.len() {
+            return Ok(SignalStatus::Pending {
+                remaining: self.weights.len() - collection.inputs.len(),
+            });
+        }
+
+        let collection = self
+            .collecting
+            .remove(&signal.event_id)
+            .ok_or(Error::UnknownEvent)?;
+        let expected = if collection.training {
+            if self.axons.is_empty() {
+                vec![FeedbackSource::Teacher]
+            } else {
+                self.axons
+                    .iter()
+                    .map(|axon| FeedbackSource::Neuron {
+                        neuron_id: axon.to,
+                        event_id: derived_event_id(collection.trace_id, axon.to),
+                    })
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
+        let output = self.forward(Forward {
+            event_id: signal.event_id,
+            trace_id: collection.trace_id,
+            now_ms: signal.now_ms,
+            inputs: collection.inputs.into_values().collect(),
+            expected,
+        })?;
+        Ok(SignalStatus::Fired { output })
+    }
+
+    /// Expire partial fan-in, active traces and completed-event tombstones.
     /// A removed event cannot be learned without an outstanding activation.
     pub fn expire(&mut self, now_ms: u64) {
         self.closed.retain(|_, closed| closed.until_ms > now_ms);
+
+        let expired_collecting: Vec<_> = self
+            .collecting
+            .iter()
+            .filter(|(_, record)| record.expires_at_ms <= now_ms)
+            .map(|(event_id, record)| (*event_id, record.expires_at_ms))
+            .collect();
+        for (event_id, expires_at_ms) in expired_collecting {
+            self.collecting.remove(&event_id);
+            self.closed.insert(
+                event_id,
+                ClosedEvent {
+                    until_ms: expires_at_ms.saturating_add(self.config.replay_retention_ms),
+                    kind: ClosedKind::Expired,
+                },
+            );
+        }
+
         let expired: Vec<_> = self
             .pending
             .iter()
