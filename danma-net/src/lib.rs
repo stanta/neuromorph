@@ -4,7 +4,8 @@
 //! advertisements; activation and feedback use direct, addressed TCP requests.
 //! Neither gossip nor an acknowledgement provides durable exactly-once effects.
 use danma_core::{
-    Feedback, FeedbackSource, FeedbackStatus, Forward, Neuron, SynapticInput,
+    derived_event_id, Feedback, FeedbackSource, FeedbackStatus, Forward, ForwardSignal, Neuron,
+    SignalStatus, SynapticInput,
 };
 use danma_shard::Shard;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,12 @@ const MAX_IO_WAIT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
 const MAX_INCOMING_INPUTS: usize = 128;
 const MAX_EXPECTED_BRANCHES: usize = 128;
+const DEFAULT_ROUTE_HOPS: u8 = 4;
+const DEFAULT_FORWARD_HOPS: u8 = 32;
+
+fn default_forward_hops() -> u8 {
+    DEFAULT_FORWARD_HOPS
+}
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -153,8 +160,22 @@ enum Message {
         event_id: u64,
         trace_id: u64,
         route_hops: u8,
+        #[serde(default = "default_forward_hops")]
+        forward_hops: u8,
         inputs: Vec<Input>,
         expected: Vec<Source>,
+    },
+    Signal {
+        target: u64,
+        event_id: u64,
+        trace_id: u64,
+        edge_id: u64,
+        from: u64,
+        source_event_id: u64,
+        value: f32,
+        training: bool,
+        forward_hops: u8,
+        route_hops: u8,
     },
     Backward {
         target: u64,
@@ -212,6 +233,89 @@ impl NodeState {
         self.target_address(target)
             .await
             .ok_or_else(|| error_response("route_unknown"))
+    }
+
+    async fn cascade_forward(
+        &self,
+        source: u64,
+        source_event_id: u64,
+        trace_id: u64,
+        output: f32,
+        axons: &[danma_core::Axon],
+        training: bool,
+        forward_hops: u8,
+    ) -> (Vec<Value>, Vec<Value>) {
+        let mut terminals = Vec::new();
+        let mut unrouted = Vec::new();
+        if axons.is_empty() {
+            terminals.push(json!({
+                "neuron":source,
+                "event_id":source_event_id,
+                "output":output
+            }));
+            return (terminals, unrouted);
+        }
+        if forward_hops == 0 {
+            for axon in axons {
+                unrouted.push(json!({
+                    "target":axon.to,
+                    "edge_id":axon.edge_id,
+                    "reason":"forward_hops_exhausted"
+                }));
+            }
+            return (terminals, unrouted);
+        }
+
+        for axon in axons {
+            let child_event = u64::try_from(derived_event_id(
+                u128::from(trace_id),
+                axon.to,
+            ))
+            .expect("derived v1 EventID always fits u64");
+            let next = Message::Signal {
+                target: axon.to,
+                event_id: child_event,
+                trace_id,
+                edge_id: axon.edge_id,
+                from: source,
+                source_event_id,
+                value: output,
+                training,
+                forward_hops: forward_hops - 1,
+                route_hops: DEFAULT_ROUTE_HOPS,
+            };
+            let reply = if self.shard.contains(axon.to) {
+                Box::pin(self.process(next)).await
+            } else {
+                match self.target_address(axon.to).await {
+                    Some(address) => self.relay(address, &next).await,
+                    None => {
+                        unrouted.push(json!({
+                            "target":axon.to,
+                            "edge_id":axon.edge_id,
+                            "reason":"no_route"
+                        }));
+                        continue;
+                    }
+                }
+            };
+            if reply["kind"] == "signal_result" {
+                if let Some(extra) = reply["terminals"].as_array() {
+                    terminals.extend(extra.iter().cloned());
+                }
+                if let Some(extra) = reply["unrouted"].as_array() {
+                    unrouted.extend(extra.iter().cloned());
+                }
+            } else {
+                unrouted.push(json!({
+                    "target":axon.to,
+                    "edge_id":axon.edge_id,
+                    "reason":"delivery_not_confirmed",
+                    "response":reply
+                }));
+            }
+        }
+        (terminals, unrouted)
     }
 
     async fn process(&self, msg: Message) -> Value {
@@ -287,7 +391,11 @@ impl NodeState {
                         "target":target,
                         "version":neuron.version,
                         "bias":neuron.bias,
-                        "weights":neuron.weights
+                        "weights":neuron.weights,
+                        "axons":neuron.axons.iter().map(|axon| json!({
+                            "edge_id":axon.edge_id,
+                            "to":axon.to
+                        })).collect::<Vec<_>>()
                     }),
                     Err(err) => error_response(&format!("inspect_{err:?}")),
                 }
@@ -334,6 +442,7 @@ impl NodeState {
                 event_id,
                 trace_id,
                 route_hops,
+                forward_hops,
                 inputs,
                 expected,
             } => {
@@ -353,12 +462,14 @@ impl NodeState {
                                 event_id,
                                 trace_id,
                                 route_hops: route_hops - 1,
+                                forward_hops,
                                 inputs,
                                 expected,
                             },
                         )
                         .await;
                 }
+                let training = !expected.is_empty();
                 let forward = Forward {
                     event_id: u128::from(event_id),
                     trace_id: u128::from(trace_id),
@@ -373,9 +484,124 @@ impl NodeState {
                         .collect(),
                     expected: expected.into_iter().map(FeedbackSource::from).collect(),
                 };
-                match self.shard.forward(target, forward).await {
-                    Ok(output) => json!({"kind":"forward_result","output":output}),
+                match self.shard.forward_outcome(target, forward).await {
+                    Ok(outcome) => {
+                        let (terminals, unrouted) = self
+                            .cascade_forward(
+                                target,
+                                event_id,
+                                trace_id,
+                                outcome.output,
+                                &outcome.axons,
+                                training,
+                                forward_hops,
+                            )
+                            .await;
+                        json!({
+                            "kind":"forward_result",
+                            "output":outcome.output,
+                            "terminals":terminals,
+                            "unrouted":unrouted
+                        })
+                    }
                     Err(err) => error_response(&format!("forward_{err:?}")),
+                }
+            }
+            Message::Signal {
+                target,
+                event_id,
+                trace_id,
+                edge_id,
+                from,
+                source_event_id,
+                value,
+                training,
+                forward_hops,
+                route_hops,
+            } => {
+                if edge_id == 0
+                    || u128::from(event_id)
+                        != derived_event_id(u128::from(trace_id), target)
+                {
+                    return error_response("invalid_forward_signal");
+                }
+                if !self.shard.contains(target) {
+                    let address = match self.route_or_error(target, route_hops).await {
+                        Ok(address) => address,
+                        Err(response) => return response,
+                    };
+                    return self
+                        .relay(
+                            address,
+                            &Message::Signal {
+                                target,
+                                event_id,
+                                trace_id,
+                                edge_id,
+                                from,
+                                source_event_id,
+                                value,
+                                training,
+                                forward_hops,
+                                route_hops: route_hops - 1,
+                            },
+                        )
+                        .await;
+                }
+                let input = ForwardSignal {
+                    event_id: u128::from(event_id),
+                    trace_id: u128::from(trace_id),
+                    now_ms: elapsed_millis(),
+                    input: SynapticInput {
+                        from,
+                        source_event_id: u128::from(source_event_id),
+                        value,
+                    },
+                    training,
+                };
+                match self.shard.signal(target, input).await {
+                    Err(err) => error_response(&format!("signal_{err:?}")),
+                    Ok(outcome) => match outcome.status {
+                        SignalStatus::Pending { remaining } => json!({
+                            "kind":"signal_result",
+                            "status":"pending",
+                            "remaining":remaining,
+                            "terminals":[],
+                            "unrouted":[]
+                        }),
+                        SignalStatus::IgnoredDuplicate => json!({
+                            "kind":"signal_result",
+                            "status":"ignored_duplicate",
+                            "terminals":[],
+                            "unrouted":[]
+                        }),
+                        SignalStatus::Expired => json!({
+                            "kind":"signal_result",
+                            "status":"expired",
+                            "terminals":[],
+                            "unrouted":[]
+                        }),
+                        SignalStatus::Fired { output } => {
+                            let (terminals, unrouted) = self
+                                .cascade_forward(
+                                    target,
+                                    event_id,
+                                    trace_id,
+                                    output,
+                                    &outcome.axons,
+                                    training,
+                                    forward_hops,
+                                )
+                                .await;
+                            json!({
+                                "kind":"signal_result",
+                                "status":"fired",
+                                "output":output,
+                                "terminals":terminals,
+                                "unrouted":unrouted
+                            })
+                        }
+                    },
                 }
             }
             Message::Backward {
