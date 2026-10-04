@@ -74,6 +74,7 @@ its ordinary Parameter gradients.
 * A neuron is an output feature; all its input synapses must already exist in
   danma-node. The current CLI initializes each neuron's bias to zero and uses
   linear activation and local SGD with learning rate 0.1.
+  The v1 adapter accepts up to **1024 input and 1024 output features**; each DANMA neuron itself is capped at 1024 dendrites and 1024 axons.
 * input_ids are reserved, **unowned** host input identities. They must never
   be advertised as actual neurons in the current cluster. The backward
   response returns each unrouteable input gradient with reason "no_route".
