@@ -207,8 +207,8 @@ async fn oversized_frame_does_not_stop_the_node() {
 
     let (_children, addr) = cluster().await;
     let mut socket = tokio::net::TcpStream::connect(addr[0]).await.unwrap();
-    socket.write_u32(65_537).await.unwrap();
-    // The length alone exceeds the 64 KiB bound. The node closes this
+    socket.write_u32(262_145).await.unwrap();
+    // The length alone exceeds the 256 KiB bound. The node closes this
     // connection without allocating a user-specified buffer.
     let mut byte = [0_u8; 1];
     let read = timeout(Duration::from_secs(2), socket.read(&mut byte)).await;
