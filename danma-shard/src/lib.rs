@@ -117,7 +117,7 @@ fn process(command: Command, neurons: &mut BTreeMap<NeuronId, Neuron>) {
                 .ok_or(ShardError::UnknownNeuron(target))
                 .and_then(|neuron| {
                     let status = neuron.receive_signal(input).map_err(ShardError::Core)?;
-                    let axons = if matches!(status, SignalStatus::Fired { .. }) {
+                    let axons = if matches!(&status, SignalStatus::Fired { .. }) {
                         neuron.axons().to_vec()
                     } else {
                         Vec::new()
