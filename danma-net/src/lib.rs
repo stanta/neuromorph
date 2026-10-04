@@ -25,7 +25,7 @@ use tokio::{
 };
 
 const MAX_FRAME_BYTES: usize = 256 * 1024;
-const MAX_ADVERTISED_ROUTES: usize = 4_096;
+const MAX_ADVERTISED_ROUTES: usize = 2_048;
 const MAX_IO_WAIT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
 const MAX_INCOMING_INPUTS: usize = MAX_DENDRITES_PER_NEURON;
