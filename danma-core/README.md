@@ -11,6 +11,12 @@ runtime dependencies. It is not a GPU emulator.
 - Each forward call computes a real weighted sum with Linear or ReLU activation.
   Training activations retain the exact input values and forward-time weights
   under their unique local EventID; inference retains no full trace.
+- Each neuron may own logical **axons** `EdgeId -> downstream NeuronId`.
+  Physical addresses are deliberately excluded from neuron state. Individually
+  delivered downstream signals are accumulated by EventID until every configured
+  dendrite source has contributed; the neuron then fires once and duplicates are
+  ignored. A deterministic child EventID lets independent upstream branches join
+  the same downstream activation for one TraceID.
 - Each activation declares its expected downstream feedback branches. Feedback
   is identified by the downstream neuron and its own activation EventID.
   Repeated delivery of a branch contributes **once**; distinct branches
