@@ -5,7 +5,7 @@
 //! Neither gossip nor an acknowledgement provides durable exactly-once effects.
 use danma_core::{
     derived_event_id, Feedback, FeedbackSource, FeedbackStatus, Forward, ForwardSignal, Neuron,
-    SignalStatus, SynapticInput,
+    SignalStatus, SynapticInput, MAX_AXONS_PER_NEURON, MAX_DENDRITES_PER_NEURON,
 };
 use danma_shard::Shard;
 use serde::{Deserialize, Serialize};
@@ -24,12 +24,12 @@ use tokio::{
     time::timeout,
 };
 
-const MAX_FRAME_BYTES: usize = 64 * 1024;
-const MAX_ADVERTISED_ROUTES: usize = 128;
+const MAX_FRAME_BYTES: usize = 256 * 1024;
+const MAX_ADVERTISED_ROUTES: usize = 4_096;
 const MAX_IO_WAIT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
-const MAX_INCOMING_INPUTS: usize = 128;
-const MAX_EXPECTED_BRANCHES: usize = 128;
+const MAX_INCOMING_INPUTS: usize = MAX_DENDRITES_PER_NEURON;
+const MAX_EXPECTED_BRANCHES: usize = MAX_AXONS_PER_NEURON;
 const DEFAULT_ROUTE_HOPS: u8 = 4;
 const DEFAULT_FORWARD_HOPS: u8 = 32;
 
