@@ -1,4 +1,4 @@
-use danma_core::{Activation, Config, Neuron};
+use danma_core::{Activation, Axon, Config, Neuron};
 use danma_net::{serve, NodeConfig, Peer};
 use std::{env, net::SocketAddr, process};
 
@@ -6,7 +6,7 @@ fn parse_flags() -> Result<NodeConfig, String> {
     let mut args = env::args().skip(1);
     let mut id: Option<u64> = None;
     let mut listen: Option<SocketAddr> = None;
-    let mut specs: Vec<(u64, Vec<(u64, f32)>)> = Vec::new();
+    let mut specs: Vec<(u64, Vec<(u64, f32)>, Vec<Axon>)> = Vec::new();
     let mut worker_threads: usize = 2;
     let mut mailbox_capacity: usize = 256;
     let mut peers = Vec::new();
@@ -21,7 +21,11 @@ fn parse_flags() -> Result<NodeConfig, String> {
                 listen = Some(value.parse().map_err(|_| "invalid TCP address")?);
             }
             "--neuron" => {
-                specs.push((value.parse().map_err(|_| "invalid neuron ID")?, Vec::new()));
+                specs.push((
+                    value.parse().map_err(|_| "invalid neuron ID")?,
+                    Vec::new(),
+                    Vec::new(),
+                ));
             }
             "--weight" => {
                 let (from, weight) = value
@@ -34,6 +38,18 @@ fn parse_flags() -> Result<NodeConfig, String> {
                     from.parse().map_err(|_| "invalid source neuron")?,
                     weight.parse().map_err(|_| "invalid weight")?,
                 ));
+            }
+            "--axon" => {
+                let (edge_id, target) = value
+                    .split_once(':')
+                    .ok_or("axon must have format edge_id:target_neuron")?;
+                let spec = specs
+                    .last_mut()
+                    .ok_or("--axon requires a preceding --neuron")?;
+                spec.2.push(Axon {
+                    edge_id: edge_id.parse().map_err(|_| "invalid axon edge ID")?,
+                    to: target.parse().map_err(|_| "invalid axon target neuron")?,
+                });
             }
             "--workers" => {
                 worker_threads = value.parse().map_err(|_| "invalid worker count")?;
@@ -60,11 +76,12 @@ fn parse_flags() -> Result<NodeConfig, String> {
     }
     let neurons: Vec<Neuron> = specs
         .into_iter()
-        .map(|(neuron_id, weights)| {
-            Neuron::new(
+        .map(|(neuron_id, weights, axons)| {
+            Neuron::new_with_axons(
                 neuron_id,
                 0.0,
                 weights,
+                axons,
                 Config {
                     activation: Activation::Linear,
                     learning_rate: 0.1,
@@ -97,8 +114,8 @@ async fn main() {
             eprintln!(
                 "Usage: danma-node --id N --listen 127.0.0.1:PORT \
                  [--workers N] [--mailbox N] \
-                 --neuron ID [--weight SOURCE:WEIGHT]... \
-                 [--neuron ID --weight SOURCE:WEIGHT]... \
+                 --neuron ID [--weight SOURCE:WEIGHT]... [--axon EDGE:TARGET]... \
+                 [--neuron ID --weight SOURCE:WEIGHT --axon EDGE:TARGET]... \
                  [--peer NODE_ID@127.0.0.1:PORT]..."
             );
             process::exit(2);
