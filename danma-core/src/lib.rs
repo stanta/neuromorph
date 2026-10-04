@@ -15,6 +15,9 @@ pub type EdgeId = u64;
 pub type EventId = u128;
 pub type TraceId = u128;
 
+pub const MAX_DENDRITES_PER_NEURON: usize = 1_024;
+pub const MAX_AXONS_PER_NEURON: usize = 1_024;
+
 /// Deterministic v1 activation identity for autonomous forward propagation.
 ///
 /// The wire protocol currently carries u64 EventIDs, so the mixed result is
@@ -286,6 +289,9 @@ impl Neuron {
             if stored_weights.insert(source, weight).is_some() {
                 return Err(Error::DuplicateWeight);
             }
+            if stored_weights.len() > MAX_DENDRITES_PER_NEURON {
+                return Err(Error::CapacityExceeded);
+            }
         }
 
         let mut stored_axons = Vec::new();
@@ -302,6 +308,9 @@ impl Neuron {
                 return Err(Error::DuplicateAxonTarget);
             }
             stored_axons.push(axon);
+            if stored_axons.len() > MAX_AXONS_PER_NEURON {
+                return Err(Error::CapacityExceeded);
+            }
         }
         stored_axons.sort_unstable();
 
@@ -357,6 +366,11 @@ impl Neuron {
         self.expire(request.now_ms);
         if request.event_id == 0 {
             return Err(Error::InvalidConfiguration);
+        }
+        if request.inputs.len() > MAX_DENDRITES_PER_NEURON
+            || request.expected.len() > MAX_AXONS_PER_NEURON
+        {
+            return Err(Error::CapacityExceeded);
         }
         if self.collecting.contains_key(&request.event_id)
             || self.pending.contains_key(&request.event_id)
