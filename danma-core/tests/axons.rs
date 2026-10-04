@@ -1,6 +1,6 @@
 use danma_core::{
-    derived_event_id, Activation, Axon, Config, ForwardSignal, Neuron, SignalStatus,
-    SynapticInput,
+    derived_event_id, Activation, Axon, Config, Error, ForwardSignal, Neuron, SignalStatus,
+    SynapticInput, MAX_AXONS_PER_NEURON, MAX_DENDRITES_PER_NEURON,
 };
 
 fn config() -> Config {
@@ -118,4 +118,38 @@ fn training_signal_expects_feedback_from_downstream_axon() {
         )
         .unwrap();
     assert!(matches!(status, FeedbackStatus::Applied { version: 1, .. }));
+}
+
+
+#[test]
+fn neuron_accepts_exactly_1024_dendrites_and_axons() {
+    let weights = (1..=MAX_DENDRITES_PER_NEURON)
+        .map(|index| (index as u64, 1.0));
+    let axons = (1..=MAX_AXONS_PER_NEURON).map(|index| Axon {
+        edge_id: index as u64,
+        to: 10_000 + index as u64,
+    });
+    let neuron = Neuron::new_with_axons(9_999, 0.0, weights, axons, config()).unwrap();
+
+    assert_eq!(neuron.weights().len(), 1_024);
+    assert_eq!(neuron.axons().len(), 1_024);
+}
+
+#[test]
+fn neuron_rejects_1025_dendrites_or_axons() {
+    let too_many_weights = (1..=(MAX_DENDRITES_PER_NEURON + 1))
+        .map(|index| (index as u64, 1.0));
+    assert_eq!(
+        Neuron::new(9_999, 0.0, too_many_weights, config()).unwrap_err(),
+        Error::CapacityExceeded
+    );
+
+    let too_many_axons = (1..=(MAX_AXONS_PER_NEURON + 1)).map(|index| Axon {
+        edge_id: index as u64,
+        to: 20_000 + index as u64,
+    });
+    assert_eq!(
+        Neuron::new_with_axons(9_999, 0.0, [(1, 1.0)], too_many_axons, config()).unwrap_err(),
+        Error::CapacityExceeded
+    );
 }
