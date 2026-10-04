@@ -7,8 +7,8 @@
 //! separate, measurable optimization.
 
 use danma_core::{
-    ActivationTrace, Error as CoreError, Feedback, FeedbackStatus, Forward, Neuron,
-    NeuronId, EventId,
+    ActivationTrace, Axon, Error as CoreError, EventId, Feedback, FeedbackStatus, Forward,
+    ForwardSignal, Neuron, NeuronId, SignalStatus,
 };
 use std::{
     collections::BTreeMap,
@@ -37,6 +37,19 @@ pub struct NeuronInfo {
     pub version: u64,
     pub bias: f32,
     pub weights: BTreeMap<NeuronId, f32>,
+    pub axons: Vec<Axon>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForwardOutcome {
+    pub output: f32,
+    pub axons: Vec<Axon>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalOutcome {
+    pub status: SignalStatus,
+    pub axons: Vec<Axon>,
 }
 
 enum BackwardClock {
@@ -59,7 +72,12 @@ enum Command {
     Forward {
         target: NeuronId,
         input: Forward,
-        answer: oneshot::Sender<Result<f32, ShardError>>,
+        answer: oneshot::Sender<Result<ForwardOutcome, ShardError>>,
+    },
+    Signal {
+        target: NeuronId,
+        input: ForwardSignal,
+        answer: oneshot::Sender<Result<SignalOutcome, ShardError>>,
     },
     Backward {
         target: NeuronId,
@@ -84,7 +102,28 @@ fn process(command: Command, neurons: &mut BTreeMap<NeuronId, Neuron>) {
             let response = neurons
                 .get_mut(&target)
                 .ok_or(ShardError::UnknownNeuron(target))
-                .and_then(|neuron| neuron.forward(input).map_err(ShardError::Core));
+                .and_then(|neuron| {
+                    let output = neuron.forward(input).map_err(ShardError::Core)?;
+                    Ok(ForwardOutcome {
+                        output,
+                        axons: neuron.axons().to_vec(),
+                    })
+                });
+            let _ = answer.send(response);
+        }
+        Command::Signal { target, input, answer } => {
+            let response = neurons
+                .get_mut(&target)
+                .ok_or(ShardError::UnknownNeuron(target))
+                .and_then(|neuron| {
+                    let status = neuron.receive_signal(input).map_err(ShardError::Core)?;
+                    let axons = if matches!(status, SignalStatus::Fired { .. }) {
+                        neuron.axons().to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    Ok(SignalOutcome { status, axons })
+                });
             let _ = answer.send(response);
         }
         Command::Backward { target, input, clock, answer } => {
@@ -113,6 +152,7 @@ fn process(command: Command, neurons: &mut BTreeMap<NeuronId, Neuron>) {
                     version: neuron.version(),
                     bias: neuron.bias(),
                     weights: neuron.weights().clone(),
+                    axons: neuron.axons().to_vec(),
                 });
             let _ = answer.send(response);
         }
@@ -217,9 +257,43 @@ impl Shard {
     }
 
     pub async fn forward(&self, target: NeuronId, input: Forward) -> Result<f32, ShardError> {
+        Ok(self.forward_outcome(target, input).await?.output)
+    }
+
+    pub async fn forward_outcome(
+        &self,
+        target: NeuronId,
+        input: Forward,
+    ) -> Result<ForwardOutcome, ShardError> {
         let (sender, receiver) = oneshot::channel();
-        self.execute(target, Command::Forward { target, input, answer: sender }, receiver)
-            .await
+        self.execute(
+            target,
+            Command::Forward {
+                target,
+                input,
+                answer: sender,
+            },
+            receiver,
+        )
+        .await
+    }
+
+    pub async fn signal(
+        &self,
+        target: NeuronId,
+        input: ForwardSignal,
+    ) -> Result<SignalOutcome, ShardError> {
+        let (sender, receiver) = oneshot::channel();
+        self.execute(
+            target,
+            Command::Signal {
+                target,
+                input,
+                answer: sender,
+            },
+            receiver,
+        )
+        .await
     }
 
     pub async fn backward(
