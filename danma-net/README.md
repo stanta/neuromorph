@@ -20,8 +20,9 @@ CUDA and GPU support are out of scope.
   and sends a forward signal locally or by direct TCP. Downstream neurons collect
   fan-in by TraceID/EventID and fire only when all configured dendrite sources
   have arrived. Terminal outputs are returned in the top-level `terminals` list.
+  Wire validation permits up to **1024 incoming dendrites and 1024 expected/outgoing branches per neuron**; the development route table is capped at 4096 entries.
 - The protocol frames each JSON request with a 4-byte, big-endian frame length
-  and caps the payload at 64 KiB. There is one request and one response per
+  and caps the payload at 256 KiB. There is one request and one response per
   connection. The listener limits concurrent connections to 32; input fan-in,
   feedback fan-out and route table size are bounded separately.
 - The wire protocol v1 uses u64 EventIDs; danma-core retains u128 identifiers.
