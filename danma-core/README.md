@@ -12,6 +12,7 @@ runtime dependencies. It is not a GPU emulator.
   Training activations retain the exact input values and forward-time weights
   under their unique local EventID; inference retains no full trace.
 - Each neuron may own logical **axons** `EdgeId -> downstream NeuronId`.
+  A neuron is bounded to **1024 dendrites and 1024 axons**.
   Physical addresses are deliberately excluded from neuron state. Individually
   delivered downstream signals are accumulated by EventID until every configured
   dendrite source has contributed; the neuron then fires once and duplicates are
