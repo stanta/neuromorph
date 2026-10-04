@@ -210,6 +210,16 @@ struct Route {
     epoch: u64,
 }
 
+#[derive(Clone, Copy)]
+struct ForwardEmission {
+    source: u64,
+    source_event_id: u64,
+    trace_id: u64,
+    output: f32,
+    training: bool,
+    forward_hops: u8,
+}
+
 struct NodeState {
     id: u64,
     shard: Shard,
@@ -237,25 +247,20 @@ impl NodeState {
 
     async fn cascade_forward(
         &self,
-        source: u64,
-        source_event_id: u64,
-        trace_id: u64,
-        output: f32,
+        emission: ForwardEmission,
         axons: &[danma_core::Axon],
-        training: bool,
-        forward_hops: u8,
     ) -> (Vec<Value>, Vec<Value>) {
         let mut terminals = Vec::new();
         let mut unrouted = Vec::new();
         if axons.is_empty() {
             terminals.push(json!({
-                "neuron":source,
-                "event_id":source_event_id,
-                "output":output
+                "neuron":emission.source,
+                "event_id":emission.source_event_id,
+                "output":emission.output
             }));
             return (terminals, unrouted);
         }
-        if forward_hops == 0 {
+        if emission.forward_hops == 0 {
             for axon in axons {
                 unrouted.push(json!({
                     "target":axon.to,
@@ -268,20 +273,20 @@ impl NodeState {
 
         for axon in axons {
             let child_event = u64::try_from(derived_event_id(
-                u128::from(trace_id),
+                u128::from(emission.trace_id),
                 axon.to,
             ))
             .expect("derived v1 EventID always fits u64");
             let next = Message::Signal {
                 target: axon.to,
                 event_id: child_event,
-                trace_id,
+                trace_id: emission.trace_id,
                 edge_id: axon.edge_id,
-                from: source,
-                source_event_id,
-                value: output,
-                training,
-                forward_hops: forward_hops - 1,
+                from: emission.source,
+                source_event_id: emission.source_event_id,
+                value: emission.output,
+                training: emission.training,
+                forward_hops: emission.forward_hops - 1,
                 route_hops: DEFAULT_ROUTE_HOPS,
             };
             let reply = if self.shard.contains(axon.to) {
@@ -488,13 +493,15 @@ impl NodeState {
                     Ok(outcome) => {
                         let (terminals, unrouted) = self
                             .cascade_forward(
-                                target,
-                                event_id,
-                                trace_id,
-                                outcome.output,
+                                ForwardEmission {
+                                    source: target,
+                                    source_event_id: event_id,
+                                    trace_id,
+                                    output: outcome.output,
+                                    training,
+                                    forward_hops,
+                                },
                                 &outcome.axons,
-                                training,
-                                forward_hops,
                             )
                             .await;
                         json!({
@@ -584,13 +591,15 @@ impl NodeState {
                         SignalStatus::Fired { output } => {
                             let (terminals, unrouted) = self
                                 .cascade_forward(
-                                    target,
-                                    event_id,
-                                    trace_id,
-                                    output,
+                                    ForwardEmission {
+                                        source: target,
+                                        source_event_id: event_id,
+                                        trace_id,
+                                        output,
+                                        training,
+                                        forward_hops,
+                                    },
                                     &outcome.axons,
-                                    training,
-                                    forward_hops,
                                 )
                                 .await;
                             json!({
