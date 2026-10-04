@@ -2,11 +2,17 @@ use danma_core::{Activation, Axon, Config, Neuron};
 use danma_net::{serve, NodeConfig, Peer};
 use std::{env, net::SocketAddr, process};
 
+struct NeuronSpec {
+    id: u64,
+    weights: Vec<(u64, f32)>,
+    axons: Vec<Axon>,
+}
+
 fn parse_flags() -> Result<NodeConfig, String> {
     let mut args = env::args().skip(1);
     let mut id: Option<u64> = None;
     let mut listen: Option<SocketAddr> = None;
-    let mut specs: Vec<(u64, Vec<(u64, f32)>, Vec<Axon>)> = Vec::new();
+    let mut specs: Vec<NeuronSpec> = Vec::new();
     let mut worker_threads: usize = 2;
     let mut mailbox_capacity: usize = 256;
     let mut peers = Vec::new();
@@ -21,11 +27,11 @@ fn parse_flags() -> Result<NodeConfig, String> {
                 listen = Some(value.parse().map_err(|_| "invalid TCP address")?);
             }
             "--neuron" => {
-                specs.push((
-                    value.parse().map_err(|_| "invalid neuron ID")?,
-                    Vec::new(),
-                    Vec::new(),
-                ));
+                specs.push(NeuronSpec {
+                    id: value.parse().map_err(|_| "invalid neuron ID")?,
+                    weights: Vec::new(),
+                    axons: Vec::new(),
+                });
             }
             "--weight" => {
                 let (from, weight) = value
@@ -34,7 +40,7 @@ fn parse_flags() -> Result<NodeConfig, String> {
                 let spec = specs
                     .last_mut()
                     .ok_or("--weight requires a preceding --neuron")?;
-                spec.1.push((
+                spec.weights.push((
                     from.parse().map_err(|_| "invalid source neuron")?,
                     weight.parse().map_err(|_| "invalid weight")?,
                 ));
@@ -46,7 +52,7 @@ fn parse_flags() -> Result<NodeConfig, String> {
                 let spec = specs
                     .last_mut()
                     .ok_or("--axon requires a preceding --neuron")?;
-                spec.2.push(Axon {
+                spec.axons.push(Axon {
                     edge_id: edge_id.parse().map_err(|_| "invalid axon edge ID")?,
                     to: target.parse().map_err(|_| "invalid axon target neuron")?,
                 });
@@ -76,12 +82,12 @@ fn parse_flags() -> Result<NodeConfig, String> {
     }
     let neurons: Vec<Neuron> = specs
         .into_iter()
-        .map(|(neuron_id, weights, axons)| {
+        .map(|spec| {
             Neuron::new_with_axons(
-                neuron_id,
+                spec.id,
                 0.0,
-                weights,
-                axons,
+                spec.weights,
+                spec.axons,
                 Config {
                     activation: Activation::Linear,
                     learning_rate: 0.1,
@@ -91,7 +97,7 @@ fn parse_flags() -> Result<NodeConfig, String> {
                     max_staleness_versions: 8,
                 },
             )
-            .map_err(|error| format!("invalid neuron config for {neuron_id}: {error:?}"))
+            .map_err(|error| format!("invalid neuron config for {}: {error:?}", spec.id))
         })
         .collect::<Result<_, _>>()?;
 
