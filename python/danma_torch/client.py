@@ -15,7 +15,7 @@ import struct
 from collections.abc import Sequence
 from typing import Any
 
-MAX_FRAME_BYTES = 64 * 1024
+MAX_FRAME_BYTES = 256 * 1024
 MAX_U64 = (1 << 64) - 1
 
 
@@ -81,7 +81,7 @@ class DANMAClient:
         except (TypeError, ValueError) as exc:
             raise DANMAError(f"cannot encode DANMA request: {exc}") from exc
         if not 0 < len(encoded) <= MAX_FRAME_BYTES:
-            raise DANMAError("DANMA request exceeds 64 KiB protocol frame limit")
+            raise DANMAError("DANMA request exceeds 256 KiB protocol frame limit")
         try:
             with socket.create_connection(
                 (self.host, self.port), timeout=self.timeout_seconds

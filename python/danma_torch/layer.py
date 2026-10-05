@@ -172,8 +172,8 @@ class DANMALinear(torch.nn.Module):
             raise ValueError("input_ids must be unique")
         if set(self.neuron_ids) & set(self.input_ids):
             raise ValueError("input_ids and neuron_ids must be disjoint")
-        if len(self.neuron_ids) > 128 or len(self.input_ids) > 128:
-            raise ValueError("v1 supports at most 128 input and output features")
+        if len(self.neuron_ids) > 1_024 or len(self.input_ids) > 1_024:
+            raise ValueError("v1 supports at most 1024 input and output features")
         if type(feedback_ttl_ms) is not int or not 1 <= feedback_ttl_ms <= 10_000:
             raise ValueError("feedback_ttl_ms must be 1..10000")
         if type(route_hops) is not int or not 1 <= route_hops <= 255:

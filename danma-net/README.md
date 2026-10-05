@@ -15,8 +15,14 @@ CUDA and GPU support are out of scope.
   peers. Round-robin gossip (one peer per 100 ms) exchanges bounded neuron
   owner/epoch advertisements. Forward activations and backward feedback are
   sent by direct TCP to the discovered owner, rather than flooded by gossip.
+- Neurons can declare logical outgoing axons with `--axon EDGE:TARGET`.
+  After a neuron fires, the runtime resolves each target through the route table
+  and sends a forward signal locally or by direct TCP. Downstream neurons collect
+  fan-in by TraceID/EventID and fire only when all configured dendrite sources
+  have arrived. Terminal outputs are returned in the top-level `terminals` list.
+  Wire validation permits up to **1024 incoming dendrites and 1024 expected/outgoing branches per neuron**; the development route table is capped at 2048 entries.
 - The protocol frames each JSON request with a 4-byte, big-endian frame length
-  and caps the payload at 64 KiB. There is one request and one response per
+  and caps the payload at 256 KiB. There is one request and one response per
   connection. The listener limits concurrent connections to 32; input fan-in,
   feedback fan-out and route table size are bounded separately.
 - The wire protocol v1 uses u64 EventIDs; danma-core retains u128 identifiers.
@@ -34,11 +40,13 @@ CUDA and GPU support are out of scope.
 From the repo root, in three terminals:
 
     cargo run -p danma-net --bin danma-node -- \
-      --id 1 --listen 127.0.0.1:9101 --neuron 1 --weight 99:2 \
+      --id 1 --listen 127.0.0.1:9101 \
+      --neuron 1 --weight 99:2 --axon 12:2 \
       --peer 2@127.0.0.1:9102 --peer 3@127.0.0.1:9103
 
     cargo run -p danma-net --bin danma-node -- \
-      --id 2 --listen 127.0.0.1:9102 --neuron 2 --weight 1:3 \
+      --id 2 --listen 127.0.0.1:9102 \
+      --neuron 2 --weight 1:3 --axon 23:3 \
       --peer 1@127.0.0.1:9101 --peer 3@127.0.0.1:9103
 
     cargo run -p danma-net --bin danma-node -- \
